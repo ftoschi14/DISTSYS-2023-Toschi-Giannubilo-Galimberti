@@ -30,12 +30,12 @@ network MapReduceNet
             numWorkers = default(parent.numWorkers);
         }
     connections allowunconnected:
-        for i=0..workers-1 {
+        for i=0..numWorkers-1 {
             leader.in++ <-- {  delay = 100ms; } <-- worker[i].out++;
             leader.out++ --> {  delay = 100ms; } --> worker[i].in++;
 
         }
-        for i=0..workers-1, for j=0..workers-1 {
+        for i=0..numWorkers-1, for j=0..numWorkers-1 {
             worker[i].out++ --> {  delay = 100ms; } --> worker[j].in++ if i!=j;
         }
 
