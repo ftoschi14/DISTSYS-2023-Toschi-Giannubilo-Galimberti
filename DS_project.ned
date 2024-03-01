@@ -20,16 +20,14 @@ simple Leader
 network MapReduceNet
 {
     parameters:
-        int workers = 4;
-        @display("bgb=261,224");
+        int numWorkers;
     submodules:
         leader: Leader {
-            numWorkers = defualt(workers);
+            numWorkers = default(parent.numWorkers);
         }
 
         worker[numWorkers]: Worker {
-
-            @display("p=147,154");
+            numWorkers = default(parent.numWorkers);
         }
     connections allowunconnected:
         for i=0..workers-1 {
@@ -38,10 +36,7 @@ network MapReduceNet
 
         }
         for i=0..workers-1, for j=0..workers-1 {
-            worker[i].out++ --> {  delay = 100ms; } --> worker[j].in++;
-            worker[i].in++ <-- {  delay = 100ms; } <-- worker[j].out++;
+            worker[i].out++ --> {  delay = 100ms; } --> worker[j].in++ if i!=j;
         }
 
 }
-
-
