@@ -2,6 +2,7 @@ simple Worker
 {
     parameters:
         int numWorkers;
+        int id;
     gates:
         input in[];
         output out[];
@@ -14,7 +15,6 @@ simple Leader
     gates:
         input in[];
         output out[];
-
 }
 
 network MapReduceNet
