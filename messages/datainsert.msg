@@ -1,0 +1,4 @@
+message DataInsertMessage 
+{
+	int value;
+}

@@ -1,0 +1,4 @@
+message FinishMessage 
+{
+	bool flag;
+}
