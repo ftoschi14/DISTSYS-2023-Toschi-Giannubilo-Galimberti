@@ -36,11 +36,7 @@ private:
 		return value;
 	}
 public:
-	BatchLoader() {
-		fileName = "";
-		fileProgressName = "";
-		batchSize = 0;
-		filePosition = 0;
+	BatchLoader() : fileName(""), fileProgressName(""), batchSize(0), filePosition(0) {
 	}
 
 	BatchLoader(const std::string& fileName, const std::string& fileProgressName, int batchSize) 
