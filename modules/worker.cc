@@ -1,5 +1,6 @@
-#include <stdio.h>
-#include <string.h>
+#include <string>
+#include <iostream>
+#include <fstream>
 #include <omnetpp.h>
 #include <vector>
 
@@ -23,7 +24,6 @@ void Worker::initialize(){
 }
 
 void Worker::handleMessage(cMessage *msg){
-
 	// Setup Message chunk
 	SetupMessage *setupMsg = dynamic_cast<SetupMessage *>(msg);
     if (setupMsg != nullptr) {
@@ -36,13 +36,25 @@ void Worker::handleMessage(cMessage *msg){
 }
 
 void Worker::handleSetupMessage(SetupMessage *msg){
-	if(par("id").intValue() == -1){ // If the ID was not previously set
-		par("id") = msg->getAssigned_id();
-	}
 	int dataSize = msg->getDataArraySize();
-	data.resize(dataSize); // ASSUMPTION: The first message contains all of the data
+	int worker_id = msg->getAssigned_id();
+
+	if(par("id").intValue() == -1){ // If the ID was not previously set
+		par("id") = worker_id;
+	}
+	data.resize(dataSize);
+
+	//Persisting data on file
+	std::string folder = "Data/";
+
+	std::ofstream data_file;
+	std::string fileName = folder + "worker_" + std::to_string(worker_id) + "_data.csv";
+	data_file.open(fileName);
 
 	for (int i = 0; i < dataSize; i++) {
-    	data[i] = msg->getData(i); // Copy each data point
+	    // Directly write to the file without using std::format
+	    data_file << worker_id << ',' << msg->getData(i) << '\n';
 	}
+
+	data_file.close();
 }

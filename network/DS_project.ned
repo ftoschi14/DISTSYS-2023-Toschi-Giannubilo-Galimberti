@@ -2,7 +2,7 @@ simple Worker
 {
     parameters:
         int numWorkers;
-        int id = default(-1);
+        int id = default(-1) @mutable;
     gates:
         input in[];
         output out[];
