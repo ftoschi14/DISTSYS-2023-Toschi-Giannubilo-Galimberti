@@ -3,6 +3,7 @@ simple Worker
     parameters:
         int numWorkers;
         int id = default(-1) @mutable;
+        int batchSize;
     gates:
         input in[];
         output out[];

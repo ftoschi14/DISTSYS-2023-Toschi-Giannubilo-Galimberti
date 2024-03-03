@@ -18,7 +18,7 @@ protected:
 Define_Module(Leader);
 
 void Leader::initialize(){
-	//Create './Data/' Directory for worker data
+	//Create './Data/Worker_i' Directory for worker data
 	createWorkersDirectory();
 }
 
@@ -30,6 +30,13 @@ void Leader::createWorkersDirectory(){
 	fs::path dirPath = "Data";
 	if(!fs::exists(dirPath)){
 		fs::create_directory(dirPath);
+	}
+
+	int numWorkers = par("numWorkers").intValue();
+	fs::path subPath;
+	for(int i = 0; i < numWorkers; i++){
+		subPath = "Worker_" + std::to_string(i);
+		fs::create_directory(dirPath/subPath);
 	}
 }
 
