@@ -3,10 +3,14 @@
 #include <fstream>
 #include <vector>
 #include <omnetpp.h>
+#include <algorithm>
 
 #include "setup_m.h"
 #include "datainsert_m.h"
+#include "schedule_m.h"
 #include "BatchLoader.h"
+
+
 
 using namespace omnetpp;
 
@@ -27,6 +31,9 @@ protected:
 	virtual void handleMessage(cMessage *msg) override;
 	void handleSetupMessage(SetupMessage *msg);
 	void handleDataInsertMessage(DataInsertMessage *msg);
+	void handleScheduleMessage(ScheduleMessage *msg);
+	void applySchedule(std::vector<std::string> schedule, std::vector<int> parameters);
+	void printingVector(std::vector<int> vector);
 	int changeKey(int data);
 	int reduce(int data[]);
 	void sendData(int newKey, int value);
@@ -93,6 +100,13 @@ void Worker::handleMessage(cMessage *msg){
     	handleDataInsertMessage(dataInsertMsg);
     	return;
     }
+    ScheduleMessage *scheduleMsg = dynamic_cast<ScheduleMessage *>(msg);
+        if (scheduleMsg != nullptr) {
+            // Successfully cast to ScheduleMessage, handle it
+            EV << "received schedule message\n";
+            handleScheduleMessage(scheduleMsg);
+            return;
+        }
 
     // TODO Other messages...
 }
@@ -125,7 +139,120 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 	loader = new BatchLoader(fileName, fileProgressName, batchSize);
 
 	// Load first batch
-	data = loader->loadBatch();
+	//data = loader->loadBatch();
+}
+
+void Worker::handleScheduleMessage(ScheduleMessage *msg){
+    int scheduleSize = msg->getScheduleArraySize();
+    std::vector<std::string> schedule;
+    std::vector<int> parameters;
+
+    for(int i=0; i<scheduleSize; i++){
+        schedule.push_back(msg->getSchedule(i)) ;
+    }
+    for(int i=0; i<scheduleSize; i++){
+        parameters.push_back(msg->getParameters(i));
+    }
+    EV << "Applying schedule\n";
+    data = loader->loadBatch();
+    applySchedule(schedule, parameters);
+
+}
+
+void Worker::applySchedule(std::vector<std::string> schedule, std::vector<int> parameters) {
+    int scheduleSize = schedule.size();
+    std::vector<int> discard;
+    for (int i = 0; i < scheduleSize; i++) {
+        EV << "Applying "<<schedule[i]<<" with parameter "<<parameters[i]<<"\n";
+        for (int j = 0; j < data.size(); j++) {
+            if (schedule[i] == "add") {
+                EV << "Initial data: "<<data[j]<<"\n";
+                data[j] += parameters[i];
+                EV << "Data after addition: "<<data[j]<<"\n";
+            } else if (schedule[i] == "sub") {
+                EV<<"Initial data: "<<data[j]<<"\n";
+                data[j] -= parameters[i];
+                EV<<"Data after subtraction: "<<data[j]<<"\n";
+            } else if (schedule[i] == "mult") {
+                EV<<"Initial data: "<<data[j]<<"\n";
+                data[j] *= parameters[i];
+                EV<<"Data after multiplication: "<<data[j]<<"\n";
+            } else if (schedule[i] == "div") {
+                EV<<"Initial data: "<<data[j]<<"\n";
+                data[j] /= parameters[i];
+                EV<<"Data after division: "<<data[j]<<"\n";
+            } else if (schedule[i] == "lt") {
+                if (j == 0) {
+                    discard.assign(data.size(), 0);
+                }
+                if (data[j] >= parameters[i]) {
+                    discard[j] = 1;
+                }
+                if (i == scheduleSize - 1) {
+                    EV<<"Initial vector: ";
+                    printingVector(discard);
+                    data.erase(std::remove_if(data.begin(), data.end(), [&](int i) { return discard[i]; }), data.end());
+                    EV<<"Data after removal: ";
+                    printingVector(data);
+                }
+            } else if (schedule[i] == "gt") {
+                if (j == 0) {
+                    discard.assign(data.size(), 0);
+                }
+                if (data[j] <= parameters[i]) {
+                    discard[j] = 1;
+                }
+                if (j == data.size() - 1) {
+                    EV<<"Initial vector: ";
+                    printingVector(discard);
+                    data.erase(std::remove_if(data.begin(), data.end(), [&](int i) { return discard[i]; }), data.end());
+                    EV<<"Data after removal: ";
+                    printingVector(data);
+                }
+            } else if (schedule[i] == "le") {
+                if (j == 0) {
+                    discard.assign(data.size(), 0);
+                }
+                if (data[j] > parameters[i]) {
+                    discard[j] = 1;
+                }
+                if (j == data.size() - 1) {
+                    EV<<"Initial vector: ";
+                    printingVector(discard);
+                    data.erase(std::remove_if(data.begin(), data.end(), [&](int i) { return discard[i]; }), data.end());
+                    EV<<"Data after removal: ";
+                    printingVector(data);
+                }
+            } else if (schedule[i] == "ge") {
+                if (j == 0) {
+                    discard.assign(data.size(), 0);
+                }
+                if (data[j] < parameters[i]) {
+                    discard[j] = 1;
+                }
+                if (j == data.size() - 1) {
+                    EV<<"Initial vector: ";
+                    printingVector(discard);
+                    data.erase(std::remove_if(data.begin(), data.end(), [&](int i) { return discard[i]; }), data.end());
+                    EV<<"Data after removal: ";
+                    printingVector(data);
+                }
+            } else if (schedule[i] == "reduce") {
+                // TODO: reduce function
+            } else if (schedule[i] == "changekey") {
+                // TODO: changekey function
+            } else {
+                std::cerr << "Invalid operation: " << schedule[i] << std::endl;
+            }
+        }
+    }
+}
+
+void Worker::printingVector(std::vector<int> vector){
+    for(int i=0; i<vector.size(); i++){
+        EV<<vector[i]<<" ";
+    }
+    EV<<"\n";
 }
 
 void Worker::handleDataInsertMessage(DataInsertMessage *msg){
