@@ -53,38 +53,41 @@ void Leader::sendTestSetupMessage(int gateIndex){
 	for (int i = 0; i < numOfElements; ++i) {
     	msg->setData(i, i*2); // Fill with some values
 	}
+
 	send(msg, "out", gateIndex);
 	return;
 }
 
 void Leader::sendSchedule(){
-    ScheduleMessage *scheduleMsg = new ScheduleMessage("scheduleMessage");
-    SetupMessage *setupMsg = new SetupMessage("setupMessage");
-
     int scheduleSize = 5;
-    std::vector<std::string> schedule = {"add", "mul", "ge", "sub", "reduce"};
+	int datasize = 30;
+	int numWorkers = par("numWorkers").intValue();
+    std::vector<std::string> schedule = {"add", "mul", "ge", "lt", "reduce"};
     std::vector<int>parameters = {5, 2, 16, 10, 0};
 
     std::vector<int>data;
 
-    for(int i=0; i<10; i++){
+    for(int i=0; i<datasize; i++){
         data.push_back(i);
     }
-    setupMsg->setDataArraySize(data.size());
+	for(int i=0; i<numWorkers; i++){
+		ScheduleMessage *scheduleMsg = new ScheduleMessage("scheduleMessage");
+    	SetupMessage *setupMsg = new SetupMessage("setupMessage");
+		setupMsg->setDataArraySize(data.size());
+		setupMsg->setAssigned_id(i);
+		for(int j=0; j<data.size(); j++){
+        	setupMsg->setData(j, data[j]);
+    	}
+		send(setupMsg, "out", i);
+		scheduleMsg->setScheduleArraySize(scheduleSize);
+    	scheduleMsg->setParametersArraySize(scheduleSize);
 
-    for(int i=0; i<data.size(); i++){
-        setupMsg->setData(i, data[i]);
-    }
+		for(int k=0; k<scheduleSize; k++){
+			scheduleMsg->setSchedule(k, schedule[k].c_str());
+			scheduleMsg->setParameters(k, parameters[k]);
+		}
+	
+		send(scheduleMsg, "out", i);
+	}
 
-    send(setupMsg, "out", 0);
-    EV << "Setup message sent\n";
-    scheduleMsg->setScheduleArraySize(scheduleSize);
-    scheduleMsg->setParametersArraySize(scheduleSize);
-
-    for(int i=0; i<scheduleSize; i++){
-        scheduleMsg->setSchedule(i, schedule[i].c_str());
-        scheduleMsg->setParameters(i, parameters[i]);
-    }
-    send(scheduleMsg, "out", 0);
-    EV << "Schedule message sent\n";
 }

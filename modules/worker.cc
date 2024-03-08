@@ -179,6 +179,7 @@ void Worker::applySchedule(std::vector<std::string> schedule, std::vector<int> p
                 discard = filter(schedule[i], discard, data[j], parameters[i]);
                 if (j == data.size() - 1) {
                     data = discardingData(discard, data);
+					discard.clear();
                 } 
             } else if (schedule[i] == "reduce") {
 				reducedValue = reduce(data[j], reducedValue, j);
