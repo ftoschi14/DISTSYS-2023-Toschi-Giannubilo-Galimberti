@@ -62,8 +62,8 @@ void Leader::sendSchedule(){
     SetupMessage *setupMsg = new SetupMessage("setupMessage");
 
     int scheduleSize = 5;
-    std::vector<std::string> schedule = {"add", "mul", "le", "ge", "sub"};
-    std::vector<int>parameters = {5, 2, 5, 2, 3};
+    std::vector<std::string> schedule = {"add", "mul", "ge", "sub", "reduce"};
+    std::vector<int>parameters = {5, 2, 16, 10, 0};
 
     std::vector<int>data;
 
