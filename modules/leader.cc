@@ -23,7 +23,6 @@ class Leader : public cSimpleModule
         void sendData(int id_dest);
         void sendSchedule();
     private:
-    private:
         void removeWorkersDirectory()
         {
             fs::path dirPath = "Data";
