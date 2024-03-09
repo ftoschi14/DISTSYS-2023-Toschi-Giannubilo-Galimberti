@@ -2,60 +2,79 @@
 #include <string.h>
 #include <omnetpp.h>
 #include <filesystem>
-
 #include "setup_m.h"
 #include "schedule_m.h"
+
 namespace fs = std::filesystem;
 using namespace omnetpp;
 
-class Leader : public cSimpleModule{
-public:
-	~Leader() {
-        removeWorkersDirectory();
-    }
-protected:
-	virtual void initialize() override;
-	virtual void handleMessage(cMessage *msg) override;
-	void sendTestSetupMessage(int gateIndex);
-	void createWorkersDirectory();
-	void sendSchedule();
-private:
-	void removeWorkersDirectory() {
-        fs::path dirPath = "Data";
-        // Check if the directory exists before trying to remove it
-        if (fs::exists(dirPath) && fs::is_directory(dirPath)) {
-            // Remove the directory and its contents recursively
-            fs::remove_all(dirPath);
+class Leader : public cSimpleModule
+{
+    public:
+        ~Leader()
+        {
+            removeWorkersDirectory();
         }
-    }
+    protected:
+        virtual void initialize() override;
+        virtual void handleMessage(cMessage *msg) override;
+        //void sendTestSetupMessage(int gateIndex);
+        void createWorkersDirectory();
+        void sendData(int id_dest);
+        void sendSchedule();
+    private:
+    private:
+        void removeWorkersDirectory()
+        {
+            fs::path dirPath = "Data";
+            // Check if the directory exists before trying to remove it
+            if (fs::exists(dirPath) && fs::is_directory(dirPath))
+            {
+                // Remove the directory and its contents recursively
+                fs::remove_all(dirPath);
+            }
+        }
 };
 
 Define_Module(Leader);
 
-void Leader::initialize(){
+void Leader::initialize()
+{
 	//Create './Data/Worker_i' Directory for worker data
 	createWorkersDirectory();
-    sendSchedule();
+	//sendTestSetupMessage(0);
+    int numWorkers = par("numWorkers").intValue();
+
+	for(int i = 0; i < numWorkers; i++)
+	{
+	    sendData(i);
+	}
+	sendSchedule();
 }
 
-void Leader::handleMessage(cMessage *msg){
+void Leader::handleMessage(cMessage *msg)
+{
 	// TODO
 }
 
-void Leader::createWorkersDirectory(){
+void Leader::createWorkersDirectory()
+{
 	fs::path dirPath = "Data";
-	if(!fs::exists(dirPath)){
+	if(!fs::exists(dirPath))
+	{
 		fs::create_directory(dirPath);
 	}
 
 	int numWorkers = par("numWorkers").intValue();
 	fs::path subPath;
-	for(int i = 0; i < numWorkers; i++){
+	for(int i = 0; i < numWorkers; i++)
+	{
 		subPath = "Worker_" + std::to_string(i);
 		fs::create_directory(dirPath/subPath);
 	}
 }
 
+/*
 void Leader::sendTestSetupMessage(int gateIndex){
 	SetupMessage *msg = new SetupMessage();
 	msg->setAssigned_id(0);
@@ -66,41 +85,99 @@ void Leader::sendTestSetupMessage(int gateIndex){
 	for (int i = 0; i < numOfElements; ++i) {
     	msg->setData(i, i*2); // Fill with some values
 	}
-
 	send(msg, "out", gateIndex);
 	return;
 }
+*/
 
-void Leader::sendSchedule(){
-    int scheduleSize = 5;
-	int datasize = 30;
-	int numWorkers = par("numWorkers").intValue();
-    std::vector<std::string> schedule = {"add", "mul", "ge", "lt", "reduce"};
-    std::vector<int>parameters = {5, 2, 10, 30, 0};
+void Leader::sendData(int idDest)
+{
+    SetupMessage *msg = new SetupMessage();
+    msg -> setAssigned_id(idDest);
 
-    std::vector<int>data;
+    // Genero un numero casuale che indica la dimensione del vettore da inviare
+    //int numElements = intuniform(1, 100);
+    int numElements = 30;
+    std::cout << "Num elements: " << numElements << "\n";
 
-    for(int i=0; i<datasize; i++){
-        data.push_back(i);
+    msg -> setDataArraySize(numElements);
+    std::cout << "Array: ";
+    for(int j = 0; j < numElements; j++)
+    {
+        // Genero un valore casuale tra 1 e 100
+        int value = intuniform(1, 5);
+        std::cout << value << " ";
+        msg -> setData(j, value);
     }
-	for(int i=0; i<numWorkers; i++){
-		ScheduleMessage *scheduleMsg = new ScheduleMessage("scheduleMessage");
-    	SetupMessage *setupMsg = new SetupMessage("setupMessage");
-		setupMsg->setDataArraySize(data.size());
-		setupMsg->setAssigned_id(i);
-		for(int j=0; j<data.size(); j++){
-        	setupMsg->setData(j, data[j]);
-    	}
-		send(setupMsg, "out", i);
-		scheduleMsg->setScheduleArraySize(scheduleSize);
-    	scheduleMsg->setParametersArraySize(scheduleSize);
+    std::cout << endl << endl;
+    send(msg, "out", idDest);
+}
 
-		for(int k=0; k<scheduleSize; k++){
-			scheduleMsg->setSchedule(k, schedule[k].c_str());
-			scheduleMsg->setParameters(k, parameters[k]);
-		}
-	
-		send(scheduleMsg, "out", i);
-	}
+void Leader::sendSchedule()
+{
+    int numWorkers = par("numWorkers").intValue();
+    int maxScheduleSize = 50;
 
+    // Definisco l'insieme delle possibili operazioni
+    std::vector<std::string> operations = {"add", "sub", "mul", "div", "lt", "gt", "le", "ge", "changekey", "reduce"};
+    int op_size = operations.size();
+    std::cout << "Abbiamo " << op_size-1 << " operazioni"<< endl;
+
+    bool reduceFound = false;
+
+    // Genero la dimensione della schedule tra 1 e 15
+    //int scheduleSize = intuniform(1, 100);
+    int scheduleSize = 5;
+    std::cout << "Schedule size: " << scheduleSize << endl;
+
+
+    // Creo un array di stringhe vuoto e un array per i parametri
+    std::vector<std::string> schedule(scheduleSize);
+    schedule = {"add", "mul", "gt", "sub", "reduce"};
+    std::vector<int> parameters(scheduleSize);
+
+    for(int i = 0; i < scheduleSize; ++i)
+    {
+        // Genero un indice casuale per poi trovare l'operazione corrispondente all'indice
+        int randomIndex = intuniform(1, op_size - 1);
+        while(operations[randomIndex] == "reduce" && i != scheduleSize-1)
+        {
+            reduceFound = true;
+            randomIndex = intuniform(1, op_size) - 1;
+            std::cout << "Found: " << reduceFound << endl;
+        }
+        if(randomIndex != 9)
+        {
+            // Evito numeri negativi per via della divisione
+            int param = intuniform(1, 10);
+            parameters[i] = param;
+            //schedule[i] = operations[randomIndex];
+        }
+    }
+
+    for(int i = 0; i < numWorkers; i++)
+    {
+        std::cout << "Schedule: ";
+        ScheduleMessage *msg = new ScheduleMessage();
+        msg -> setDestWorker(i);
+        msg -> setScheduleArraySize(scheduleSize);
+        msg -> setParametersArraySize(scheduleSize);
+
+        for(int j = 0; j < scheduleSize; j++)
+        {
+            msg -> setSchedule(j, schedule[j].c_str());
+            msg -> setParameters(j, parameters[j]);
+            if(reduceFound == true)
+            {
+                schedule[scheduleSize-1] = operations[9];
+                parameters[scheduleSize-1] = 0;
+                msg -> setSchedule((scheduleSize-1), operations[op_size-1].c_str());
+                msg -> setParameters((scheduleSize-1), 0);
+            }
+            std::cout << schedule[j] << " ";
+            std::cout << parameters[j] << " ";
+        }
+        send(msg, "out", i);
+        std::cout << endl;
+    }
 }

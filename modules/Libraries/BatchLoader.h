@@ -13,7 +13,7 @@ private:
 
 	void loadProgress() {
 		//Load the last persisted file position from the progress file
-		std::ifstream progressFile(fileProgressName, std::ios::binary);
+		std::ifstream progressFile(fileProgressName);
 		if(progressFile.is_open()){
 			long long tmp;
 			progressFile >> tmp;
@@ -25,26 +25,15 @@ private:
 		}
 	}
 
-	void saveProgress() {
-	    // Load Worker's progress file in binary mode
-	    std::ofstream progressFile(fileProgressName, std::ios::binary);
-	    if (progressFile.is_open()) {
-	        // Update saved position
-	        long long tmp = static_cast<long long>(filePosition);
-	        progressFile << tmp;
-	        progressFile.close();
-	    }
-	}
+	int extractValue(const std::string& line) {
+		std::stringstream lineStream(line);
+		std::string key_part;
+		int value;
 
-	int extractValue(const std::string& line){
-		// Extract and store the value part of the key-value pair
-        std::istringstream lineStream(line);
-        std::string key, valueStr;
-        int value = -1;
-        if (std::getline(lineStream, key, ',') && std::getline(lineStream, valueStr)) { // Read up to the
-            value = std::stoi(valueStr);
-        }
-        return value;
+		std::getline(lineStream, key_part, ','); // Separates key and value strings
+		lineStream >> value; // Set value
+
+		return value;
 	}
 public:
 	BatchLoader() : fileName(""), fileProgressName(""), batchSize(0), filePosition(0) {
@@ -56,7 +45,7 @@ public:
 	}
 
 	std::vector<int> loadBatch() {
-		std::ifstream file(fileName);
+		std::ifstream file(fileName, std::ios::binary);
 		if(!file.is_open()){
 			std::cerr << "Failed to open file: " << fileName << std::endl;
 			return {};
@@ -66,25 +55,20 @@ public:
 
 		if (!file) {
 		    std::cerr << "Failed to seek to position: " << filePosition << std::endl;
-		    return {};
+		    file.clear(); // Attempt to clear the error state
 		}
 
 		std::vector<int> batchValues;
 		std::string line;
 		int linesRead = 0;
 
-		while (linesRead < batchSize && std::getline(file, line, '\n')) {
-	        // In binary mode, manually handle carriage returns if present
-	        if (!line.empty() && line.back() == '\r') {
-	            line.pop_back(); // Throw away \r
-	        }
+		while(linesRead < batchSize && std::getline(file, line)) {
+			// Extract and store the value part of the key-value pair
+			int value = extractValue(line);
+			batchValues.push_back(value);
 
-	        // Extract and store the value part of the key-value pair
-	        int value = extractValue(line);
-	        batchValues.push_back(value);
-
-	        linesRead++;
-	    }
+			linesRead++;
+		}
 
 		// After reading
 		if (!file.eof() && file.fail()) {
@@ -94,5 +78,16 @@ public:
 
 		file.close();
 		return batchValues;
+	}
+
+	void saveProgress() {
+		// Load Worker's progress file
+		std::ofstream progressFile(fileProgressName);
+		if(progressFile.is_open()){
+			// Update saved position
+			long long tmp = static_cast<long long>(filePosition);
+			progressFile << tmp;
+			progressFile.close();
+		}
 	}
 };
