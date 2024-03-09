@@ -162,6 +162,7 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
     
 	for(int i=0; i<iterations; i++){
 		data = loader->loadBatch();
+
 		applySchedule(schedule, parameters);
 	}
 	
@@ -183,6 +184,7 @@ void Worker::applySchedule(std::vector<std::string> schedule, std::vector<int> p
                 } 
             } else if (schedule[i] == "reduce") {
 				reducedValue = reduce(data[j], reducedValue, j);
+            	EV << "Entered reduce: " << std::to_string(reducedValue) << "\n";
             } else if (schedule[i] == "changekey") {
                 // TODO: changekey function
             } else {
@@ -190,7 +192,7 @@ void Worker::applySchedule(std::vector<std::string> schedule, std::vector<int> p
             }
         }
     }
-	if(schedule[scheduleSize-1] == "reduce"){
+	if(schedule[scheduleSize-1] == "reduce" && data.size() > 0){
 		persistingReduce(reducedValue);
 	}else{
 		persistingResult(data);
@@ -320,11 +322,13 @@ int Worker::reduce(int data, int reducedValue, int iteration){
 	std::ifstream file(filename);
 	if(iteration == 0){
 		std::string line;
-		if (std::getline(file, line)) { 
+		if (std::getline(file, line)) { // 59, || ,59
 			std::istringstream iss(line);
 			int firstInteger;
 			if (iss >> firstInteger) {
 				reducedValue += firstInteger; 
+				EV << "FirstInteger: " << firstInteger << "\n";
+				EV << "Reduced updated: " << reducedValue << "\n";
 			}
 		}
 		file.close();
@@ -336,14 +340,17 @@ int Worker::reduce(int data, int reducedValue, int iteration){
 
 void Worker::persistingReduce(int reducedValue){
 	std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
-	std::ofstream result_file;
-
 	std::string fileName = folder + "result.csv";
-	result_file.open(fileName);
 
-	result_file << reducedValue;
+	std::ofstream result_file(fileName);
+	if(result_file.is_open()){
+		EV << "Opened reduce file\n";
+		result_file << reducedValue;
 
-	result_file.close();
+		result_file.close();
+		return;
+	}
+	EV << "Can't open file: " << fileName << "\n";
 }
 
 

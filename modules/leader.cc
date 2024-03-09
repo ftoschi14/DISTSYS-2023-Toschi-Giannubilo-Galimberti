@@ -63,7 +63,7 @@ void Leader::sendSchedule(){
 	int datasize = 30;
 	int numWorkers = par("numWorkers").intValue();
     std::vector<std::string> schedule = {"add", "mul", "ge", "lt", "reduce"};
-    std::vector<int>parameters = {5, 2, 16, 10, 0};
+    std::vector<int>parameters = {5, 2, 10, 30, 0};
 
     std::vector<int>data;
 
