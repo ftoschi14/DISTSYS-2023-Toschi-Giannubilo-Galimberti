@@ -124,7 +124,12 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 	}
 
 	int dataSize = msg->getDataArraySize();
-	iterations = (dataSize / batchSize) +1;
+	iterations = dataSize / batchSize;
+	int remainder = dataSize % batchSize;
+	if(remainder > 0)
+	{
+	    iterations++;
+	}
 	//Persisting data on file
 	std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
 	std::ofstream data_file;
