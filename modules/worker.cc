@@ -163,7 +163,8 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
 
 	for(int i=0; i<iterations; i++){
 		data = loader->loadBatch();
-
+		EV << "Data Loaded:\n";
+		printingVector(data);
 		applySchedule(schedule, parameters);
 	}
 	
@@ -342,7 +343,6 @@ void Worker::persistingReduce(int reducedValue){
 
 	std::ofstream result_file(fileName);
 	if(result_file.is_open()){
-		EV << "Opened reduce file\n";
 		result_file << reducedValue;
 
 		result_file.close();
