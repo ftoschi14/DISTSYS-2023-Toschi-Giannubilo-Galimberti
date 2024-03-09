@@ -1,5 +1,6 @@
-message ScheduleMessage
+message ScheduleMessage 
 {
-    string schedule[];
-    int parameters[];
+	int destWorker;
+	string schedule[];
+	int parameters[];
 }
