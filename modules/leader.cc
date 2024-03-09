@@ -9,12 +9,25 @@ namespace fs = std::filesystem;
 using namespace omnetpp;
 
 class Leader : public cSimpleModule{
+public:
+	~Leader() {
+        removeWorkersDirectory();
+    }
 protected:
 	virtual void initialize() override;
 	virtual void handleMessage(cMessage *msg) override;
 	void sendTestSetupMessage(int gateIndex);
 	void createWorkersDirectory();
 	void sendSchedule();
+private:
+	void removeWorkersDirectory() {
+        fs::path dirPath = "Data";
+        // Check if the directory exists before trying to remove it
+        if (fs::exists(dirPath) && fs::is_directory(dirPath)) {
+            // Remove the directory and its contents recursively
+            fs::remove_all(dirPath);
+        }
+    }
 };
 
 Define_Module(Leader);
