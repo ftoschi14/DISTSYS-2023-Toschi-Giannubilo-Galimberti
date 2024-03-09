@@ -53,6 +53,11 @@ public:
 		saveProgress(); // Save current position before reading next N lines
 		file.seekg(filePosition); // Move to the last processed batch
 
+		if (!file) {
+		    std::cerr << "Failed to seek to position: " << filePosition << std::endl;
+		    file.clear(); // Attempt to clear the error state
+		}
+
 		std::vector<int> batchValues;
 		std::string line;
 		int linesRead = 0;
@@ -65,6 +70,10 @@ public:
 			linesRead++;
 		}
 
+		// After reading
+		if (!file.eof() && file.fail()) {
+		    file.clear(); // Clears the failbit
+		}
 		filePosition = file.tellg();
 
 		file.close();
