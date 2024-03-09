@@ -109,7 +109,6 @@ void Worker::handleMessage(cMessage *msg){
     ScheduleMessage *scheduleMsg = dynamic_cast<ScheduleMessage *>(msg);
         if (scheduleMsg != nullptr) {
             // Successfully cast to ScheduleMessage, handle it
-            EV << "received schedule message\n";
             handleScheduleMessage(scheduleMsg);
             return;
         }
@@ -144,8 +143,8 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 	fileProgressName = folder + "progress.txt";
 	loader = new BatchLoader(fileName, fileProgressName, batchSize);
 
-	// Load first batch
-	//data = loader->loadBatch();
+	// Free up memory after loading setup
+	delete msg;
 }
 
 void Worker::handleScheduleMessage(ScheduleMessage *msg){
@@ -159,7 +158,9 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
     for(int i=0; i<scheduleSize; i++){
         parameters.push_back(msg->getParameters(i));
     }
-    
+    // Free up memory after copying data
+    delete msg;
+
 	for(int i=0; i<iterations; i++){
 		data = loader->loadBatch();
 
@@ -184,7 +185,6 @@ void Worker::applySchedule(std::vector<std::string> schedule, std::vector<int> p
                 } 
             } else if (schedule[i] == "reduce") {
 				reducedValue = reduce(data[j], reducedValue, j);
-            	EV << "Entered reduce: " << std::to_string(reducedValue) << "\n";
             } else if (schedule[i] == "changekey") {
                 // TODO: changekey function
             } else {
@@ -322,13 +322,11 @@ int Worker::reduce(int data, int reducedValue, int iteration){
 	std::ifstream file(filename);
 	if(iteration == 0){
 		std::string line;
-		if (std::getline(file, line)) { // 59, || ,59
+		if (std::getline(file, line)) {
 			std::istringstream iss(line);
 			int firstInteger;
 			if (iss >> firstInteger) {
 				reducedValue += firstInteger; 
-				EV << "FirstInteger: " << firstInteger << "\n";
-				EV << "Reduced updated: " << reducedValue << "\n";
 			}
 		}
 		file.close();
