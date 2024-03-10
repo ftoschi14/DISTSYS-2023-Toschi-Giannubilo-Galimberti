@@ -26,6 +26,7 @@ private:
 	float timeout;
 	BatchLoader* loader;
 	int iterations;
+	int numWorkers;
 
 protected:
 	virtual void initialize() override;
@@ -38,12 +39,12 @@ protected:
 	std::vector<int> filter(std::string operation, std::vector<int> discard, int data, int parameter);
 	std::vector<int> discardingData(std::vector<int> discard, std::vector<int> data);
 	void persistingResult(std::vector<int> result);
-	void printingVector(std::vector<int> vector);
 	int changeKey(int data);
 	int reduce(int data, int reduce, int iteration);
 	void persistingReduce(int reduce);
 	void sendData(int newKey, int value);
 	int getWorkerGate(int destID);
+	void printingVector(std::vector<int> vector);
 };
 
 Define_Module(Worker);
@@ -51,6 +52,7 @@ Define_Module(Worker);
 void Worker::initialize(){
 	// TODO
 	batchSize = par("batchSize").intValue();
+	numWorkers = par("numWorkers").intValue();
 	data.resize(batchSize);
 	timeout=5;
 }
@@ -107,11 +109,11 @@ void Worker::handleMessage(cMessage *msg){
     	return;
     }
     ScheduleMessage *scheduleMsg = dynamic_cast<ScheduleMessage *>(msg);
-        if (scheduleMsg != nullptr) {
-            // Successfully cast to ScheduleMessage, handle it
-            handleScheduleMessage(scheduleMsg);
-            return;
-        }
+    if (scheduleMsg != nullptr) {
+        // Successfully cast to ScheduleMessage, handle it
+        handleScheduleMessage(scheduleMsg);
+        return;
+    }
 
     // TODO Other messages...
 }
@@ -309,18 +311,27 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 	}
 }
 
-int Worker::changeKey(int data){
+/**
+ * Redirects data to a different worker based on a specified probability.
+ * 
+ * This function uses the data's identifier and a predefined probability to determine
+ * whether to redirect the data to another worker in the network. It calculates an
+ * adjustment factor based on the probability and the number of workers, then applies
+ * modular arithmetic to decide on redirection. If the resulting value matches the current
+ * worker's ID or exceeds the number of workers, the data remains with the current worker;
+ * otherwise, it's redirected according to the calculated value.
+ *
+ * @param data The identifier of the data.
+ * @param probability The probability of redirection as a decimal (e.g., 0.05 for 5%).
+ * @return The ID of the worker to which the data should be redirected, or -1 if it stays.
+ */
+int Worker::changeKey(int data, float probability){
 	// TODO crash probability
-	int res = bernoulli(0.05); // 5% of a data point changing key
-	if(res){
-		// Pick new random key, different from current worker
-		int newKey = -1;
-		while(newKey < 0 || newKey == workerId){
-			newKey = uniform(0, par("numWorkers").intValue());
-		}
-		return newKey;
+	int ckValue = data % ((1/(probability))*numWorkers);
+	if(ckValue == workerId || ckValue >= numWorkers) {
+		return -1;
 	}
-	return -1;
+	return ckValue;
 }
 
 int Worker::reduce(int data, int reducedValue, int iteration){
