@@ -39,7 +39,7 @@ protected:
 	std::vector<int> filter(std::string operation, std::vector<int> discard, int data, int parameter);
 	std::vector<int> discardingData(std::vector<int> discard, std::vector<int> data);
 	void persistingResult(std::vector<int> result);
-	int changeKey(int data);
+	int changeKey(int data, float probability);
 	int reduce(int data, int reduce, int iteration);
 	void persistingReduce(int reduce);
 	void sendData(int newKey, int value);
@@ -327,7 +327,7 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
  */
 int Worker::changeKey(int data, float probability){
 	// TODO crash probability
-	int ckValue = data % ((1/(probability))*numWorkers);
+	int ckValue = data % (int(1/probability)*numWorkers);
 	if(ckValue == workerId || ckValue >= numWorkers) {
 		return -1;
 	}
