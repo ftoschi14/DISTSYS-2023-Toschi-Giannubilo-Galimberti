@@ -10,8 +10,6 @@
 #include "schedule_m.h"
 #include "BatchLoader.h"
 
-
-
 using namespace omnetpp;
 
 class Worker : public cSimpleModule{
@@ -27,6 +25,7 @@ private:
 	BatchLoader* loader;
 	int iterations;
 	int numWorkers;
+	int changeKeyCtr;
 
 protected:
 	virtual void initialize() override;
@@ -42,7 +41,7 @@ protected:
 	int changeKey(int data, float probability);
 	int reduce(int data, int reduce, int iteration);
 	void persistingReduce(int reduce);
-	void sendData(int newKey, int value);
+	void sendData(int newKey, int value, int scheduleStep);
 	int getWorkerGate(int destID);
 	void printingVector(std::vector<int> vector);
 };
@@ -55,6 +54,7 @@ void Worker::initialize(){
 	numWorkers = par("numWorkers").intValue();
 	data.resize(batchSize);
 	timeout=5;
+	changeKeyCtr = 0;
 }
 
 void Worker::handleMessage(cMessage *msg){
@@ -76,7 +76,7 @@ void Worker::handleMessage(cMessage *msg){
 			if(insertMsg != unstableMessages.end()){
 
 				// Get the worker ID from the message
-				int destWorker = insertMsg->second->getDestWorker();
+				int destWorker = insertMsg->second->getDestID();
 				DataInsertMessage* insertMsgCopy = insertMsg->second->dup();
 				send(insertMsgCopy, "out", getWorkerGate(destWorker));
 
@@ -116,6 +116,8 @@ void Worker::handleMessage(cMessage *msg){
     }
 
     // TODO Other messages...
+    // Free up memory
+    delete msg;
 }
 
 void Worker::handleSetupMessage(SetupMessage *msg){
@@ -149,9 +151,6 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 	// Instantiate a BatchLoader
 	fileProgressName = folder + "progress.txt";
 	loader = new BatchLoader(fileName, fileProgressName, batchSize);
-
-	// Free up memory after loading setup
-	delete msg;
 }
 
 void Worker::handleScheduleMessage(ScheduleMessage *msg){
@@ -165,13 +164,9 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
     for(int i=0; i<scheduleSize; i++){
         parameters.push_back(msg->getParameters(i));
     }
-    // Free up memory after copying data
-    delete msg;
 
 	for(int i=0; i<iterations; i++){
 		data = loader->loadBatch();
-		EV << "Data Loaded:\n";
-		printingVector(data);
 		applySchedule(schedule, parameters);
 	}
 	
@@ -299,15 +294,15 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 			EV << "Received ACK, deleting unstable message";
 			unstableMessages.erase(reqID);
 		}
-		return;
 	} else {
 		// Insert new data point into data vector
+		
+
 		DataInsertMessage* insertMsg = new DataInsertMessage();
 		insertMsg->setReqID(msg->getReqID());
 		insertMsg->setAck(true);
 
 		send(insertMsg, "out", msg->getArrivalGate()->getIndex());
-		delete msg;
 	}
 }
 
@@ -327,7 +322,7 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
  */
 int Worker::changeKey(int data, float probability){
 	// TODO crash probability
-	int ckValue = data % (int(1/probability)*numWorkers);
+	int ckValue = data % (static_cast<int>(1/(probability))*numWorkers);
 	if(ckValue == workerId || ckValue >= numWorkers) {
 		return -1;
 	}
@@ -368,17 +363,19 @@ void Worker::persistingReduce(int reducedValue){
 }
 
 
-void Worker::sendData(int newKey, int value){
+void Worker::sendData(int newKey, int value, int scheduleStep){
 	// Create message
 	DataInsertMessage* insertMsg = new DataInsertMessage();
 
 	// Insert <k, v> pair
-	insertMsg->setDestWorker(newKey);
-	insertMsg->setValue(value);
+	insertMsg->setDestID(newKey);
+	insertMsg->setData(value);
 	
 	// Generate request ID
-	int reqID = uniform(INT_MIN, INT_MAX);
-	insertMsg->setReqID(reqID);
+	insertMsg->setReqID(changeKeyCtr);
+
+	insertMsg->setScheduleStep(scheduleStep);
+	insertMsg->setAck(false);
 
 	DataInsertMessage* insertMsgCopy = insertMsg->dup();
 
@@ -387,14 +384,15 @@ void Worker::sendData(int newKey, int value){
 	send(insertMsgCopy, "out", outputGate);
 
 	//add req to queue and wait for ACK, set timeout
-	unstableMessages[reqID] = insertMsg;
+	unstableMessages[changeKeyCtr] = insertMsg;
 
-	cMessage* timeoutMsg = new cMessage(("Timeout-" + std::to_string(reqID)).c_str());
-	timeoutMsg->setContextPointer(new int(reqID));
+	cMessage* timeoutMsg = new cMessage(("Timeout-" + std::to_string(changeKeyCtr)).c_str());
+	timeoutMsg->setContextPointer(new int(changeKeyCtr));
 
 	scheduleAt(simTime()+timeout, timeoutMsg);
 
-	timeouts[reqID] = timeoutMsg;
+	timeouts[changeKeyCtr] = timeoutMsg;
+	changeKeyCtr++;
 }
 
 int Worker::getWorkerGate(int destID){
