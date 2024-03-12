@@ -11,8 +11,7 @@
 #include "finishLocalElaboration_m.h"
 #include "checkChangeKeyAck_m.h"
 #include "BatchLoader.h"
-
-
+#include "InsertManager.h"
 
 using namespace omnetpp;
 
@@ -23,11 +22,12 @@ private:
 	std::map<int, cMessage*> timeouts;
 	std::string fileName;
 	std::string fileProgressName;
+	BatchLoader* loader;
+	InsertManager* insertManager;
 	int batchSize;
 	float failureProbability;
 	int workerId;
 	float timeout;
-	BatchLoader* loader;
 	int iterations;
 	bool failed;
 	int changeKeyCtr;
@@ -166,6 +166,11 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 	fileProgressName = folder + "progress.txt";
 	loader = new BatchLoader(fileName, fileProgressName, batchSize);
 
+	// Instantiate an InsertManager
+	insertFilename = folder + "inserted.csv";
+	requestFilename = folder + "requests_log.csv";
+	int saveFrequency = 1;
+	insertManager = new InsertManager(insertFilename, requestFilename, batchSize, saveFrequency);
 }
 
 void Worker::handleScheduleMessage(ScheduleMessage *msg){
