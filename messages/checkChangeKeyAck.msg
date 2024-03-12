@@ -1,0 +1,4 @@
+message CheckChangeKeyAckMessage
+{
+    int workerId;
+}

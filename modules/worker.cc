@@ -9,6 +9,7 @@
 #include "datainsert_m.h"
 #include "schedule_m.h"
 #include "finishLocalElaboration_m.h"
+#include "checkChangeKeyAck_m.h"
 #include "BatchLoader.h"
 
 
@@ -52,7 +53,7 @@ protected:
 	int getWorkerGate(int destID);
 	bool failureDetection();
 	void deallocatingMemory();
-	//void handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg);
+	void handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg);
 
 };
 
@@ -124,8 +125,7 @@ void Worker::handleMessage(cMessage *msg){
 	FinishLocalElaborationMessage *finishLocalMsg = dynamic_cast<FinishLocalElaborationMessage *>(msg);
 	if(finishLocalMsg != nullptr){
 		EV<<"Start executing the remain schedule for the latecomers change key data\n";
-		//TODO call the same function called for the already local change key data and then send the finish message
-		//handleFinishLocalElaborationMessage(finishLocalMsg);
+		handleFinishLocalElaborationMessage(finishLocalMsg);
 	}
 
     ScheduleMessage *scheduleMsg = dynamic_cast<ScheduleMessage *>(msg);
@@ -196,6 +196,14 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
 	finishLocalMsg->setWorkerId(workerId);
 	send(finishLocalMsg, "out", 0);	
 	
+}
+
+void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg){
+	//TODO call the same function called for the already local change key data and then send the finish message
+	CheckChangeKeyAckMessage* checkChangeKeyAckMsg = new CheckChangeKeyAckMessage();
+	checkChangeKeyAckMsg->setWorkerId(workerId);
+	send(checkChangeKeyAckMsg, "out", 0);
+	EV<<"\nChangeKey checked at worker: "<<workerId<<"\n\n";
 }
 
 void Worker::localDataExecution(std::vector<std::string> schedule, std::vector<int> parameters){
