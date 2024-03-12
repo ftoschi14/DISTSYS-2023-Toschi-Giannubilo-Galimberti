@@ -32,6 +32,7 @@ private:
 	bool failed;
 	int changeKeyCtr;
 	int numWorkers;
+	float changeKeyProbability;
 
 protected:
 	virtual void initialize() override;
@@ -51,6 +52,7 @@ protected:
 	void persistingReduce(int reduce);
 	void sendData(int newKey, int value, int scheduleStep);
 	int getWorkerGate(int destID);
+	int getInboundWorkerID(int gateIndex);
 	bool failureDetection();
 	void deallocatingMemory();
 	void handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg);
@@ -68,6 +70,7 @@ void Worker::initialize(){
 	data.resize(batchSize);
 	timeout=5;
 	changeKeyCtr = 0;
+	changeKeyProbability = 0.05;
 }
 
 void Worker::handleMessage(cMessage *msg){
@@ -251,7 +254,11 @@ void Worker::applySchedule(std::vector<std::string> schedule, std::vector<int> p
 				reducedValue = reduce(currentData[j], reducedValue, j);
 				EV<<"Reduced value: "<<reducedValue<<"\n";
             } else if (schedule[i] == "changekey") {
-                // TODO: changekey function
+            	int newKey = changeKey(currentData[j], changeKeyProbability);
+                if(newKey != -1) {
+                	EV << "Changing Key: " << workerId << " -> " << newKey << std::endl;
+                	sendData(newKey, currentData[j], i); // 'i' == Schedule step
+                }
             } else {
                 EV << "Invalid operation: " << schedule[i] << "\n";
             }
@@ -388,11 +395,17 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 		}
 	} else {
 		// Insert new data point into data vector
+		int gateIndex = msg->getArrivalGate()->getIndex();
+		int senderID = getInboundWorkerID(gateIndex);
+
+		insertManager->insertValue(senderID, msg->getReqID(), msg->getScheduleStep(), msg->getData());
+
+		// Send back ACK after insertion
 		DataInsertMessage* insertMsg = new DataInsertMessage();
 		insertMsg->setReqID(msg->getReqID());
 		insertMsg->setAck(true);
 
-		send(insertMsg, "out", msg->getArrivalGate()->getIndex());
+		send(insertMsg, "out", gateIndex);
 	}
 }
 
@@ -472,6 +485,13 @@ void Worker::sendData(int newKey, int value, int scheduleStep){
 
 	timeouts[changeKeyCtr] = timeoutMsg;
 	changeKeyCtr++;
+}
+
+int Worker::getInboundWorkerID(int gateIndex) {
+	if(gateIndex <= workerId) {
+		return gateIndex - 1;
+	}
+	return gateIndex;
 }
 
 int Worker::getWorkerGate(int destID){
