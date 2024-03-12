@@ -129,6 +129,7 @@ void Worker::handleMessage(cMessage *msg){
 	if(finishLocalMsg != nullptr){
 		EV<<"Start executing the remain schedule for the latecomers change key data\n";
 		handleFinishLocalElaborationMessage(finishLocalMsg);
+		return;
 	}
 
     ScheduleMessage *scheduleMsg = dynamic_cast<ScheduleMessage *>(msg);
@@ -137,8 +138,6 @@ void Worker::handleMessage(cMessage *msg){
         handleScheduleMessage(scheduleMsg);
         return;
     }
-	
-	delete msg;
     // TODO Other messages...
 }
 
@@ -174,6 +173,8 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 	std::string requestFilename = folder + "requests_log.csv";
 	int saveFrequency = 1;
 	insertManager = new InsertManager(insertFilename, requestFilename, batchSize, saveFrequency);
+
+	delete msg;
 }
 
 void Worker::handleScheduleMessage(ScheduleMessage *msg){
@@ -204,6 +205,7 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
 	finishLocalMsg->setWorkerId(workerId);
 	send(finishLocalMsg, "out", 0);	
 	
+	delete msg;
 }
 
 void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg){
@@ -212,6 +214,8 @@ void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *
 	checkChangeKeyAckMsg->setWorkerId(workerId);
 	send(checkChangeKeyAckMsg, "out", 0);
 	EV<<"\nChangeKey checked at worker: "<<workerId<<"\n\n";
+
+	delete msg;
 }
 
 void Worker::localDataExecution(std::vector<std::string> schedule, std::vector<int> parameters){
@@ -407,10 +411,11 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 
 		send(insertMsg, "out", gateIndex);
 	}
+	
+	delete msg;
 }
 
 int Worker::changeKey(int data, float probability){
-	// TODO crash probability
 	int ckValue = data % (static_cast<int>(1/(probability))*numWorkers);
 	if(ckValue == workerId || ckValue >= numWorkers) {
 		return -1;
