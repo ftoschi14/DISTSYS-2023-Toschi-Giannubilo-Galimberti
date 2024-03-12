@@ -1,0 +1,4 @@
+message FinishLocalElaborationMessage
+{
+    int workerId;
+}

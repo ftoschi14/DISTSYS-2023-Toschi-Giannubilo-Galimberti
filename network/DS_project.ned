@@ -4,6 +4,7 @@ simple Worker
         int numWorkers;
         int id = default(-1) @mutable;
         int batchSize;
+        int failureProbability;
     gates:
         input in[];
         output out[];

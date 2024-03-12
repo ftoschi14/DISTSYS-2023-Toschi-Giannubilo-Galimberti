@@ -8,7 +8,10 @@
 #include "setup_m.h"
 #include "datainsert_m.h"
 #include "schedule_m.h"
+#include "finishLocalElaboration_m.h"
 #include "BatchLoader.h"
+
+
 
 using namespace omnetpp;
 
@@ -20,12 +23,14 @@ private:
 	std::string fileName;
 	std::string fileProgressName;
 	int batchSize;
+	float failureProbability;
 	int workerId;
 	float timeout;
 	BatchLoader* loader;
 	int iterations;
-	int numWorkers;
+	bool failed;
 	int changeKeyCtr;
+	int numWorkers;
 
 protected:
 	virtual void initialize() override;
@@ -33,17 +38,22 @@ protected:
 	void handleSetupMessage(SetupMessage *msg);
 	void handleDataInsertMessage(DataInsertMessage *msg);
 	void handleScheduleMessage(ScheduleMessage *msg);
-	void applySchedule(std::vector<std::string> schedule, std::vector<int> parameters);
+	void localDataExecution(std::vector<std::string> schedule, std::vector<int> parameters);
+	void applySchedule(std::vector<std::string> schedule, std::vector<int> parameters, std::vector<int> currentData);
 	int map(std::string operation, int parameter, int data);
 	std::vector<int> filter(std::string operation, std::vector<int> discard, int data, int parameter);
 	std::vector<int> discardingData(std::vector<int> discard, std::vector<int> data);
 	void persistingResult(std::vector<int> result);
+	void printingVector(std::vector<int> vector);
 	int changeKey(int data, float probability);
 	int reduce(int data, int reduce, int iteration);
 	void persistingReduce(int reduce);
 	void sendData(int newKey, int value, int scheduleStep);
 	int getWorkerGate(int destID);
-	void printingVector(std::vector<int> vector);
+	bool failureDetection();
+	void deallocatingMemory();
+	//void handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg);
+
 };
 
 Define_Module(Worker);
@@ -51,7 +61,9 @@ Define_Module(Worker);
 void Worker::initialize(){
 	// TODO
 	batchSize = par("batchSize").intValue();
+	failureProbability = (par("failureProbability").intValue()) / 1000.0;
 	numWorkers = par("numWorkers").intValue();
+	failed = false;
 	data.resize(batchSize);
 	timeout=5;
 	changeKeyCtr = 0;
@@ -108,16 +120,23 @@ void Worker::handleMessage(cMessage *msg){
     	handleDataInsertMessage(dataInsertMsg);
     	return;
     }
-    ScheduleMessage *scheduleMsg = dynamic_cast<ScheduleMessage *>(msg);
-    if (scheduleMsg != nullptr) {
-        // Successfully cast to ScheduleMessage, handle it
-        handleScheduleMessage(scheduleMsg);
-        return;
-    }
+	
+	FinishLocalElaborationMessage *finishLocalMsg = dynamic_cast<FinishLocalElaborationMessage *>(msg);
+	if(finishLocalMsg != nullptr){
+		EV<<"Start executing the remain schedule for the latecomers change key data\n";
+		//TODO call the same function called for the already local change key data and then send the finish message
+		//handleFinishLocalElaborationMessage(finishLocalMsg);
+	}
 
+    ScheduleMessage *scheduleMsg = dynamic_cast<ScheduleMessage *>(msg);
+        if (scheduleMsg != nullptr) {
+            // Successfully cast to ScheduleMessage, handle it
+            handleScheduleMessage(scheduleMsg);
+            return;
+        }
+	
+	delete msg;
     // TODO Other messages...
-    // Free up memory
-    delete msg;
 }
 
 void Worker::handleSetupMessage(SetupMessage *msg){
@@ -128,12 +147,7 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 	}
 
 	int dataSize = msg->getDataArraySize();
-	iterations = dataSize / batchSize;
-	int remainder = dataSize % batchSize;
-	if(remainder > 0)
-	{
-	    iterations++;
-	}
+	iterations = (dataSize / batchSize) +1;
 	//Persisting data on file
 	std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
 	std::ofstream data_file;
@@ -151,43 +165,78 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 	// Instantiate a BatchLoader
 	fileProgressName = folder + "progress.txt";
 	loader = new BatchLoader(fileName, fileProgressName, batchSize);
+
 }
 
 void Worker::handleScheduleMessage(ScheduleMessage *msg){
     int scheduleSize = msg->getScheduleArraySize();
+
     std::vector<std::string> schedule;
     std::vector<int> parameters;
 
     for(int i=0; i<scheduleSize; i++){
         schedule.push_back(msg->getSchedule(i)) ;
-    }
-    for(int i=0; i<scheduleSize; i++){
-        parameters.push_back(msg->getParameters(i));
+		parameters.push_back(msg->getParameters(i));
     }
 
-	for(int i=0; i<iterations; i++){
-		data = loader->loadBatch();
-		applySchedule(schedule, parameters);
-	}
+	localDataExecution(schedule, parameters);
+
+	/*TODO: ADDING THE PART OF APPLYING THE SCHEDULE TO THE ALREADY PRESENT DATA OF THE CHANGE KEY
+		Instantiate a BatchLoader for the changeKey file
+		Retrieve the length of the data file to know how many iterations to run with the defined batch size
+		Load the data from the file by taking together the ones that arrived at the same point in the schedule (the minimum between the batch size and the data 
+		with the same arrival point in the schedule(possibility of producing more than one batch with the same remaining schedule if the data is more than the batch size))
+		Create a new schedule with the remaining operations for each batch 
+		Apply the schedule to the data
+	*/	
+
+	
+	EV<<"\nSENDING FINISHED LOCAL ELABORATION WORKER: "<<workerId<<"\n\n";
+	FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
+	finishLocalMsg->setWorkerId(workerId);
+	send(finishLocalMsg, "out", 0);	
 	
 }
 
-void Worker::applySchedule(std::vector<std::string> schedule, std::vector<int> parameters) {
+void Worker::localDataExecution(std::vector<std::string> schedule, std::vector<int> parameters){
+	for(int i=0; i<iterations; i++){
+		data = loader->loadBatch();
+		applySchedule(schedule, parameters, data);
+		if(failed){
+			return;
+		}
+	}
+}
+
+
+	
+void Worker::applySchedule(std::vector<std::string> schedule, std::vector<int> parameters, std::vector<int> currentData) {
     int scheduleSize = schedule.size();
     std::vector<int> discard;
 	int reducedValue = 0;
     for (int i = 0; i < scheduleSize; i++) {
-        for (int j = 0; j < data.size(); j++) {
+        for (int j = 0; j < currentData.size(); j++) {
+			EV<<"Operation: "<<schedule[i]<<"\n";
+			if(failureDetection()){
+				failed = true;
+				EV<<"FAILURE DETECTED AT WORKER: "<<workerId<<", deallocating memory\n";
+				deallocatingMemory();
+				return;
+			}
             if (schedule[i] == "add" || schedule[i] == "sub" || schedule[i] == "mul" || schedule[i] == "div") {
-                data[j] = map(schedule[i], parameters[i], data[j]);
+                currentData[j] = map(schedule[i], parameters[i], currentData[j]);
+				EV<<"CurrentData after mapping: "<<currentData[j]<<"\n";
             } else if (schedule[i] == "lt" || schedule[i] == "gt" || schedule[i] == "le" || schedule[i] == "ge") {
-                discard = filter(schedule[i], discard, data[j], parameters[i]);
-                if (j == data.size() - 1) {
-                    data = discardingData(discard, data);
+                discard = filter(schedule[i], discard, currentData[j], parameters[i]);
+                if (j == currentData.size() - 1) {
+                    currentData = discardingData(discard, currentData);
+					EV<<"Data after discarding: ";
+					printingVector(currentData);
 					discard.clear();
                 } 
             } else if (schedule[i] == "reduce") {
-				reducedValue = reduce(data[j], reducedValue, j);
+				reducedValue = reduce(currentData[j], reducedValue, j);
+				EV<<"Reduced value: "<<reducedValue<<"\n";
             } else if (schedule[i] == "changekey") {
                 // TODO: changekey function
             } else {
@@ -195,11 +244,41 @@ void Worker::applySchedule(std::vector<std::string> schedule, std::vector<int> p
             }
         }
     }
-	if(schedule[scheduleSize-1] == "reduce" && data.size() > 0){
+	if(schedule[scheduleSize-1] == "reduce" && currentData.size() > 0){
 		persistingReduce(reducedValue);
 	}else{
-		persistingResult(data);
+		persistingResult(currentData);
 	}
+}
+
+bool Worker::failureDetection(){
+	int res = bernoulli(failureProbability);
+	if(res){
+		return true;
+	}
+	return false;
+
+}
+
+void Worker::deallocatingMemory(){
+	data.clear();
+	for (auto& pair : unstableMessages) {
+		cancelAndDelete(pair.second);
+	}
+	unstableMessages.clear();
+	for(auto& pair : timeouts){
+		cancelAndDelete(pair.second);
+	}
+	timeouts.clear();
+
+	fileName = "";
+	fileProgressName = "";
+	batchSize = 0;
+	failureProbability = 0;
+	workerId = 0;
+	timeout = 0;
+	iterations = 0;
+	delete loader;
 }
 
 int Worker::map(std::string operation, int parameter, int data){
@@ -296,8 +375,6 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 		}
 	} else {
 		// Insert new data point into data vector
-		
-
 		DataInsertMessage* insertMsg = new DataInsertMessage();
 		insertMsg->setReqID(msg->getReqID());
 		insertMsg->setAck(true);
@@ -306,20 +383,6 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 	}
 }
 
-/**
- * Redirects data to a different worker based on a specified probability.
- * 
- * This function uses the data's identifier and a predefined probability to determine
- * whether to redirect the data to another worker in the network. It calculates an
- * adjustment factor based on the probability and the number of workers, then applies
- * modular arithmetic to decide on redirection. If the resulting value matches the current
- * worker's ID or exceeds the number of workers, the data remains with the current worker;
- * otherwise, it's redirected according to the calculated value.
- *
- * @param data The identifier of the data.
- * @param probability The probability of redirection as a decimal (e.g., 0.05 for 5%).
- * @return The ID of the worker to which the data should be redirected, or -1 if it stays.
- */
 int Worker::changeKey(int data, float probability){
 	// TODO crash probability
 	int ckValue = data % (static_cast<int>(1/(probability))*numWorkers);
@@ -354,12 +417,15 @@ void Worker::persistingReduce(int reducedValue){
 
 	std::ofstream result_file(fileName);
 	if(result_file.is_open()){
+		EV << "Opened reduce file\n";
 		result_file << reducedValue;
 
 		result_file.close();
-		return;
+		
+	}else{
+		EV << "Can't open file: " << fileName << "\n";
 	}
-	EV << "Can't open file: " << fileName << "\n";
+	
 }
 
 

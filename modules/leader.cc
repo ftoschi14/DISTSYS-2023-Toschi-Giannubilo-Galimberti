@@ -4,6 +4,7 @@
 #include <filesystem>
 #include "setup_m.h"
 #include "schedule_m.h"
+#include "finishLocalElaboration_m.h"
 
 namespace fs = std::filesystem;
 using namespace omnetpp;
@@ -22,7 +23,11 @@ class Leader : public cSimpleModule
         void createWorkersDirectory();
         void sendData(int id_dest);
         void sendSchedule();
+        void handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg);
     private:
+        int numWorkers;
+        std::vector<int> localFinishedWorkers;
+        bool everyOneFinished;
         void removeWorkersDirectory()
         {
             fs::path dirPath = "Data";
@@ -41,8 +46,13 @@ void Leader::initialize()
 {
 	//Create './Data/Worker_i' Directory for worker data
 	createWorkersDirectory();
+    
 	//sendTestSetupMessage(0);
-    int numWorkers = par("numWorkers").intValue();
+    numWorkers = par("numWorkers").intValue();
+    for(int i = 0; i < numWorkers; i++)
+    {
+        localFinishedWorkers.push_back(0);
+    }
 
 	for(int i = 0; i < numWorkers; i++)
 	{
@@ -53,7 +63,39 @@ void Leader::initialize()
 
 void Leader::handleMessage(cMessage *msg)
 {
-	// TODO
+    FinishLocalElaborationMessage *finishLocalMsg = dynamic_cast<FinishLocalElaborationMessage *>(msg);
+    if(finishLocalMsg != nullptr)
+    {
+        handleFinishLocalElaborationMessage(finishLocalMsg);
+    }
+    
+	
+}
+
+void Leader::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg)
+{
+    int id = msg -> getWorkerId();
+    localFinishedWorkers[id] = 1;
+    EV << "\nWORKER " << id << " FINISHED ITS LOCAL EXECUTION\n\n";
+    delete msg;
+    everyOneFinished = true;
+    for(int i = 0; i < numWorkers; i++)
+    {
+        if(localFinishedWorkers[i] == 0)
+        {
+            everyOneFinished = false;
+            break;
+        }
+    }
+    if(everyOneFinished)
+    {
+        for(int i = 0; i < numWorkers; i++)
+        {
+            FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
+            finishLocalMsg -> setWorkerId(i);
+            send(finishLocalMsg, "out", i);
+        }
+    }
 }
 
 void Leader::createWorkersDirectory()

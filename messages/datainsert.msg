@@ -1,8 +1,7 @@
 message DataInsertMessage 
 {
-	int destID;
+	int destWorker;
 	int reqID;
-	int data;
-	int scheduleStep;
+	int value;
 	bool ack;
 }
