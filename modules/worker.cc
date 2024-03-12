@@ -129,11 +129,11 @@ void Worker::handleMessage(cMessage *msg){
 	}
 
     ScheduleMessage *scheduleMsg = dynamic_cast<ScheduleMessage *>(msg);
-        if (scheduleMsg != nullptr) {
-            // Successfully cast to ScheduleMessage, handle it
-            handleScheduleMessage(scheduleMsg);
-            return;
-        }
+    if (scheduleMsg != nullptr) {
+        // Successfully cast to ScheduleMessage, handle it
+        handleScheduleMessage(scheduleMsg);
+        return;
+    }
 	
 	delete msg;
     // TODO Other messages...
@@ -167,8 +167,8 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 	loader = new BatchLoader(fileName, fileProgressName, batchSize);
 
 	// Instantiate an InsertManager
-	insertFilename = folder + "inserted.csv";
-	requestFilename = folder + "requests_log.csv";
+	std::string insertFilename = folder + "inserted.csv";
+	std::string requestFilename = folder + "requests_log.csv";
 	int saveFrequency = 1;
 	insertManager = new InsertManager(insertFilename, requestFilename, batchSize, saveFrequency);
 }

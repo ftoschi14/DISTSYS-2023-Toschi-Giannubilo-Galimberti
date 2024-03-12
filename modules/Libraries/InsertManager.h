@@ -24,7 +24,7 @@ private:
 		}
 
 		for(int i = 0; i < insertedData.size(); i++){
-			file << insertedData[i] << std::endl;
+			insertFile << insertedData[i] << std::endl;
 		}
 		insertFile.close();
 
@@ -47,7 +47,7 @@ private:
 			return;
 		}
 		std::string line;
-		while(getline(insertFile, line)) {
+		while(std::getline(insertFile, line)) {
 			insertedData.push_back(std::stoi(line));
 		}
 
@@ -58,16 +58,16 @@ private:
 			std::cerr << "Error opening request file for reading." << std::endl;
 			return;
 		}
-		std::string line;
-		while(getline(reqFile, line)) {
+
+		while(std::getline(reqFile, line)) {
 			std::istringstream iss(line);
 
 			int senderID;
 			int reqID;
 
-			if(getline(iss, line, ',')) {
+			if(std::getline(iss, line, ',')) {
 				senderID = std::stoi(line);
-				if(getline(iss, reqID)) {
+				if(iss >> reqID) {
 					senderReqMap.insert({senderID, reqID});
 				}
 			}
