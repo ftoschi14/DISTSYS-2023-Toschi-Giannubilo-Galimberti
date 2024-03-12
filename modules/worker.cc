@@ -171,8 +171,7 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 	// Instantiate an InsertManager
 	std::string insertFilename = folder + "inserted.csv";
 	std::string requestFilename = folder + "requests_log.csv";
-	int saveFrequency = 1;
-	insertManager = new InsertManager(insertFilename, requestFilename, batchSize, saveFrequency);
+	insertManager = new InsertManager(insertFilename, requestFilename, batchSize);
 
 	delete msg;
 }

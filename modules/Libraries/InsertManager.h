@@ -13,8 +13,6 @@ private:
     std::string requestFilename;
     int currentBatchSize;
     int batchSize;
-    int saveFrequency;
-    int unstableCount;
 
     void saveData() {
         std::ofstream insertFile(insertFilename);
@@ -47,12 +45,12 @@ private:
     }
 
 public:
-    InsertManager() : insertFilename(""), requestFilename(""), batchSize(0), saveFrequency(0), unstableCount(0) {
+    InsertManager() : insertFilename(""), requestFilename(""), batchSize(0) {
         std::cout << "WARNING: Using default InsertManager constructor - missing filenames and BatchSize";
     }
 
-    InsertManager(const std::string& insertFilename, const std::string& requestFilename, int batchSize, int saveFrequency)
-        : insertFilename(insertFilename), requestFilename(requestFilename), batchSize(batchSize), saveFrequency(saveFrequency) {
+    InsertManager(const std::string& insertFilename, const std::string& requestFilename, int batchSize)
+        : insertFilename(insertFilename), requestFilename(requestFilename), batchSize(batchSize) {
     }
 
     std::map<int, std::vector<int>> getBatch() {
@@ -102,11 +100,6 @@ public:
         insertedData[scheduleStep].push_back(value);
         std::cout << "DEBUG: Inserted " << value << " From " << senderID << " With reqID: " << reqID << " At scheduleStep: " << scheduleStep << "\n";
 
-        unstableCount++;
-
-        if (unstableCount >= saveFrequency) {
-            saveData();
-            unstableCount = 0;
-        }
+        saveData();
     }
 };
