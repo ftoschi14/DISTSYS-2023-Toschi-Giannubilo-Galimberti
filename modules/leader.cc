@@ -2,9 +2,11 @@
 #include <string.h>
 #include <omnetpp.h>
 #include <filesystem>
+#include<cstdlib>
 #include "setup_m.h"
 #include "schedule_m.h"
 #include "finishLocalElaboration_m.h"
+#include "checkChangeKeyAck_m.h"
 
 namespace fs = std::filesystem;
 using namespace omnetpp;
@@ -23,11 +25,11 @@ class Leader : public cSimpleModule
         void createWorkersDirectory();
         void sendData(int id_dest);
         void sendSchedule();
-        void handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg);
+        void handleFinishElaborationMessage(cMessage *msg, bool local, int id);
     private:
         int numWorkers;
-        std::vector<int> localFinishedWorkers;
-        bool everyOneFinished;
+        std::vector<int> finishedWorkers;
+        bool finished;
         void removeWorkersDirectory()
         {
             fs::path dirPath = "Data";
@@ -51,11 +53,12 @@ void Leader::initialize()
     numWorkers = par("numWorkers").intValue();
     for(int i = 0; i < numWorkers; i++)
     {
-        localFinishedWorkers.push_back(0);
+        finishedWorkers.push_back(0);
     }
 
 	for(int i = 0; i < numWorkers; i++)
 	{
+        srand((unsigned) time(NULL)+i);
 	    sendData(i);
 	}
 	sendSchedule();
@@ -66,34 +69,52 @@ void Leader::handleMessage(cMessage *msg)
     FinishLocalElaborationMessage *finishLocalMsg = dynamic_cast<FinishLocalElaborationMessage *>(msg);
     if(finishLocalMsg != nullptr)
     {
-        handleFinishLocalElaborationMessage(finishLocalMsg);
+        handleFinishElaborationMessage(finishLocalMsg, true, finishLocalMsg -> getWorkerId());
+        return;
+    }
+    CheckChangeKeyAckMessage *checkChangeKeyAckMsg = dynamic_cast<CheckChangeKeyAckMessage *>(msg);
+    if(checkChangeKeyAckMsg != nullptr)
+    {
+        handleFinishElaborationMessage(finishLocalMsg, false, checkChangeKeyAckMsg -> getWorkerId());
+        return;
     }
     
 	
 }
 
-void Leader::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg)
-{
-    int id = msg -> getWorkerId();
-    localFinishedWorkers[id] = 1;
-    EV << "\nWORKER " << id << " FINISHED ITS LOCAL EXECUTION\n\n";
+void Leader::handleFinishElaborationMessage(cMessage *msg, bool local, int id)
+{   
+
+    finishedWorkers[id] = 1;
     delete msg;
-    everyOneFinished = true;
+    finished = true;
     for(int i = 0; i < numWorkers; i++)
     {
-        if(localFinishedWorkers[i] == 0)
+        if(finishedWorkers[i] == 0)
         {
-            everyOneFinished = false;
+            finished = false;
             break;
         }
     }
-    if(everyOneFinished)
+    if(finished)
     {
         for(int i = 0; i < numWorkers; i++)
         {
-            FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
-            finishLocalMsg -> setWorkerId(i);
-            send(finishLocalMsg, "out", i);
+            if(local){
+                FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
+                finishLocalMsg -> setWorkerId(i);
+                EV<<"\nEVERYONE FINISHED ITS LOCAL ELABORATION\n";
+                send(finishLocalMsg, "out", i);
+                for(int i = 0; i < numWorkers; i++)
+                {
+                    finishedWorkers[i] = 0;
+                }
+            }else{
+                CheckChangeKeyAckMessage* checkChangeKeyAckMsg = new CheckChangeKeyAckMessage();
+                checkChangeKeyAckMsg -> setWorkerId(i);
+                EV<<"\nAPPLICATION FINISHED AT LEADER SIDE\n";
+                send(checkChangeKeyAckMsg, "out", i);
+            }
         }
     }
 }
@@ -134,8 +155,9 @@ void Leader::sendTestSetupMessage(int gateIndex){
 void Leader::sendData(int idDest)
 {
     SetupMessage *msg = new SetupMessage();
-    msg -> setAssigned_id(idDest);
 
+    msg -> setAssigned_id(idDest);
+    
     // Genero un numero casuale che indica la dimensione del vettore da inviare
     //int numElements = intuniform(1, 100);
     int numElements = 30;
@@ -146,7 +168,7 @@ void Leader::sendData(int idDest)
     for(int j = 0; j < numElements; j++)
     {
         // Genero un valore casuale tra 1 e 100
-        int value = intuniform(1, 5);
+        int value = 1 + (rand() % 100);
         std::cout << value << " ";
         msg -> setData(j, value);
     }
