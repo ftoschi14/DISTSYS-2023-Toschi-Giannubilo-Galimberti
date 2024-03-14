@@ -4,6 +4,9 @@
 #include <string>
 #include <sstream>
 #include <vector>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 class InsertManager {
 private:
@@ -41,8 +44,55 @@ private:
     }
 
     void loadData() {
-        // Load data logic here (to be updated as per new insertedData structure)
+        std::ifstream insertFile(insertFilename);
+        if (!insertFile.is_open()) {
+            std::cerr << "Error opening insert file for reading." << std::endl;
+            return;
+        }
+        std::string line;
+        while (std::getline(insertFile, line)) {
+            std::istringstream iss(line);
+            std::string part;
+            std::vector<int> parts;
+
+            while (std::getline(iss, part, ',')) {
+                parts.push_back(std::stoi(part));
+            }
+
+            // Line format: "scheduleStep,value"
+            if (parts.size() == 2) {
+                int scheduleStep = parts[0];
+                int value = parts[1];
+                insertedData[scheduleStep].push_back(value);
+            }
+        }
+        insertFile.close();
+
+        std::ifstream reqFile(requestFilename);
+        if (!reqFile.is_open()) {
+            std::cerr << "Error opening request file for reading." << std::endl;
+            return;
+        }
+
+        while (std::getline(reqFile, line)) {
+            std::istringstream iss(line);
+            std::string part;
+            std::vector<int> parts;
+
+            while (std::getline(iss, part, ',')) {
+                parts.push_back(std::stoi(part));
+            }
+
+            // Line format: "senderID,reqID"
+            if (parts.size() == 2) {
+                int senderID = parts[0];
+                int reqID = parts[1];
+                senderReqMap[senderID] = reqID;
+            }
+        }
+        reqFile.close();
     }
+
 
 public:
     InsertManager() : insertFilename(""), requestFilename(""), batchSize(0) {
@@ -51,6 +101,17 @@ public:
 
     InsertManager(const std::string& insertFilename, const std::string& requestFilename, int batchSize)
         : insertFilename(insertFilename), requestFilename(requestFilename), batchSize(batchSize) {
+
+        if (fs::exists(insertFilename) && fs::exists(requestFilename)) {
+            loadData();
+        } else {
+            if (!fs::exists(insertFilename)) {
+                std::cerr << "Insert file does not exist, starting with an empty dataset." << std::endl;
+            }
+            if (!fs::exists(requestFilename)) {
+                std::cerr << "Request file does not exist, starting with an empty request log." << std::endl;
+            }
+        }
     }
 
     std::map<int, std::vector<int>> getBatch() {

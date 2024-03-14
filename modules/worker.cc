@@ -10,6 +10,7 @@
 #include "schedule_m.h"
 #include "finishLocalElaboration_m.h"
 #include "checkChangeKeyAck_m.h"
+#include "restart_m.h"
 #include "BatchLoader.h"
 #include "InsertManager.h"
 
@@ -20,6 +21,7 @@ private:
 	std::vector<int> data;
 	std::map<int, DataInsertMessage*> unstableMessages;
 	std::map<int, cMessage*> timeouts;
+	std::string folder;
 	std::string fileName;
 	std::string fileProgressName;
 	BatchLoader* loader;
@@ -40,6 +42,8 @@ protected:
 	void handleSetupMessage(SetupMessage *msg);
 	void handleDataInsertMessage(DataInsertMessage *msg);
 	void handleScheduleMessage(ScheduleMessage *msg);
+	void handleRestartMessage(RestartMessage *msg);
+	void initializeDataModules();
 	void localDataExecution(std::vector<std::string> schedule, std::vector<int> parameters);
 	void applySchedule(std::vector<std::string> schedule, std::vector<int> parameters, std::vector<int> currentData);
 	int map(std::string operation, int parameter, int data);
@@ -56,7 +60,6 @@ protected:
 	bool failureDetection();
 	void deallocatingMemory();
 	void handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg);
-
 };
 
 Define_Module(Worker);
@@ -138,6 +141,13 @@ void Worker::handleMessage(cMessage *msg){
         handleScheduleMessage(scheduleMsg);
         return;
     }
+
+    RestartMessage *restartMsg = dynamic_cast<RestartMessage *>(msg);
+    if(restartMsg != nullptr) {
+    	// Successfully cast to RestartMessage, handle it
+    	handleRestartMessage(restartMsg);
+    	return;
+    }
     // TODO Other messages...
 }
 
@@ -151,7 +161,7 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 	int dataSize = msg->getDataArraySize();
 	iterations = (dataSize / batchSize) +1;
 	//Persisting data on file
-	std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
+	folder = "Data/Worker_" + std::to_string(workerId) + "/";
 	std::ofstream data_file;
 
 	fileName = folder + "data.csv";
@@ -164,14 +174,7 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 
 	data_file.close();
 
-	// Instantiate a BatchLoader
-	fileProgressName = folder + "progress.txt";
-	loader = new BatchLoader(fileName, fileProgressName, batchSize);
-
-	// Instantiate an InsertManager
-	std::string insertFilename = folder + "inserted.csv";
-	std::string requestFilename = folder + "requests_log.csv";
-	insertManager = new InsertManager(insertFilename, requestFilename, batchSize);
+	initializeDataModules();
 
 	delete msg;
 }
@@ -215,6 +218,19 @@ void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *
 	EV<<"\nChangeKey checked at worker: "<<workerId<<"\n\n";
 
 	delete msg;
+}
+
+void Worker::handleRestartMessage(RestartMessage *msg){
+	if(!failed){
+		EV << "Worker " << workerId << " received a RestartMessage, but has not failed!" << std::endl;
+		return;
+	}
+	failed = false;
+
+	workerId = msg->getWorkerID();
+	initializeDataModules();
+	// Re-Initialized worker and data modules, now wait for schedule and re-start processing
+	return;
 }
 
 void Worker::localDataExecution(std::vector<std::string> schedule, std::vector<int> parameters){
@@ -489,6 +505,17 @@ void Worker::sendData(int newKey, int value, int scheduleStep){
 
 	timeouts[changeKeyCtr] = timeoutMsg;
 	changeKeyCtr++;
+}
+
+void initializeDataModules() {
+	// Instantiate a BatchLoader
+	fileProgressName = folder + "progress.txt";
+	loader = new BatchLoader(fileName, fileProgressName, batchSize);
+
+	// Instantiate an InsertManager
+	std::string insertFilename = folder + "inserted.csv";
+	std::string requestFilename = folder + "requests_log.csv";
+	insertManager = new InsertManager(insertFilename, requestFilename, batchSize);
 }
 
 int Worker::getInboundWorkerID(int gateIndex) {
