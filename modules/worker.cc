@@ -11,8 +11,11 @@
 #include "finishLocalElaboration_m.h"
 #include "checkChangeKeyAck_m.h"
 #include "restart_m.h"
+#include "ping_m.h"
 #include "BatchLoader.h"
 #include "InsertManager.h"
+
+#define LEADER_PORT 0
 
 using namespace omnetpp;
 
@@ -110,6 +113,13 @@ void Worker::handleMessage(cMessage *msg){
 			}
 			return;
 		}
+	}
+
+	// Ping Message chunk
+	PingMessage *pingMsg = dynamic_cast<PingMessage *>(msg);
+	if(pingMsg != nullptr){
+		send(pingMsg, "out", LEADER_PORT);
+		return;
 	}
 
 	// Setup Message chunk
