@@ -1,0 +1,4 @@
+message FinishSimMessage 
+{
+    int workerId;
+}
