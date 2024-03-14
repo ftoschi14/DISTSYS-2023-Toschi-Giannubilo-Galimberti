@@ -507,7 +507,7 @@ void Worker::sendData(int newKey, int value, int scheduleStep){
 	changeKeyCtr++;
 }
 
-void initializeDataModules() {
+void Worker::initializeDataModules() {
 	// Instantiate a BatchLoader
 	fileProgressName = folder + "progress.txt";
 	loader = new BatchLoader(fileName, fileProgressName, batchSize);

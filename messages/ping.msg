@@ -1,0 +1,4 @@
+message PingMessage 
+{
+	int sequenceNumber;	
+}
