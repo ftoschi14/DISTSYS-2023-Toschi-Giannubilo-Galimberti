@@ -12,6 +12,7 @@
 #include "checkChangeKeyAck_m.h"
 #include "restart_m.h"
 #include "ping_m.h"
+#include "finishSim_m.h"
 #include "BatchLoader.h"
 #include "InsertManager.h"
 
@@ -22,6 +23,8 @@ using namespace omnetpp;
 class Worker : public cSimpleModule{
 private:
 	std::vector<int> data;
+	std::vector<std::string> schedule;
+    std::vector<int> parameters;
 	std::map<int, DataInsertMessage*> unstableMessages;
 	std::map<int, cMessage*> timeouts;
 	std::string folder;
@@ -43,26 +46,31 @@ protected:
 	virtual void initialize() override;
 	virtual void handleMessage(cMessage *msg) override;
 	void handleSetupMessage(SetupMessage *msg);
-	void handleDataInsertMessage(DataInsertMessage *msg);
 	void handleScheduleMessage(ScheduleMessage *msg);
+	void handleDataInsertMessage(DataInsertMessage *msg);
 	void handleRestartMessage(RestartMessage *msg);
+	void handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg);
+	void handleFinishSimMessage(FinishSimMessage *msg);
 	void initializeDataModules();
-	void localDataExecution(std::vector<std::string> schedule, std::vector<int> parameters);
+	void localDataExecution();
+	void changeKeyDataExecution();
+	std::vector<int> getRemainingParameters(int scheduleStep);
+	std::vector<std::string> getRemainingSchedule(int scheduleStep);
 	void applySchedule(std::vector<std::string> schedule, std::vector<int> parameters, std::vector<int> currentData);
 	int map(std::string operation, int parameter, int data);
 	std::vector<int> filter(std::string operation, std::vector<int> discard, int data, int parameter);
-	std::vector<int> discardingData(std::vector<int> discard, std::vector<int> data);
-	void persistingResult(std::vector<int> result);
-	void printingVector(std::vector<int> vector);
 	int changeKey(int data, float probability);
 	int reduce(int data, int reduce, int iteration);
-	void persistingReduce(int reduce);
+	bool failureDetection();
+	void deallocatingMemory();
+	std::vector<int> discardingData(std::vector<int> discard, std::vector<int> data);
 	void sendData(int newKey, int value, int scheduleStep);
 	int getWorkerGate(int destID);
 	int getInboundWorkerID(int gateIndex);
-	bool failureDetection();
-	void deallocatingMemory();
-	void handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg);
+	void persistingResult(std::vector<int> result);
+	void persistingReduce(int reduce);
+	void printingVector(std::vector<int> vector);
+	
 };
 
 Define_Module(Worker);
@@ -76,7 +84,7 @@ void Worker::initialize(){
 	data.resize(batchSize);
 	timeout=5;
 	changeKeyCtr = 0;
-	changeKeyProbability = 0.05;
+	changeKeyProbability = 0.1;
 }
 
 void Worker::handleMessage(cMessage *msg){
@@ -114,15 +122,6 @@ void Worker::handleMessage(cMessage *msg){
 			return;
 		}
 	}
-
-	// Ping Message chunk
-	PingMessage *pingMsg = dynamic_cast<PingMessage *>(msg);
-	if(pingMsg != nullptr){
-		send(pingMsg, "out", LEADER_PORT);
-		return;
-	}
-
-	// Setup Message chunk
 	SetupMessage *setupMsg = dynamic_cast<SetupMessage *>(msg);
     if(setupMsg != nullptr){
         // Successfully cast to SetupMessage, handle it
@@ -130,6 +129,13 @@ void Worker::handleMessage(cMessage *msg){
         return;
     }
 
+	ScheduleMessage *scheduleMsg = dynamic_cast<ScheduleMessage *>(msg);
+    if (scheduleMsg != nullptr) {
+        // Successfully cast to ScheduleMessage, handle it
+        handleScheduleMessage(scheduleMsg);
+        return;
+    }
+	
     // DataInsertMessage (Could be either to insert here, or an ACK)
     DataInsertMessage *dataInsertMsg = dynamic_cast<DataInsertMessage *>(msg);
     if(dataInsertMsg != nullptr){
@@ -138,6 +144,13 @@ void Worker::handleMessage(cMessage *msg){
     	return;
     }
 	
+	RestartMessage *restartMsg = dynamic_cast<RestartMessage *>(msg);
+    if(restartMsg != nullptr) {
+    	// Successfully cast to RestartMessage, handle it
+    	handleRestartMessage(restartMsg);
+    	return;
+    }
+
 	FinishLocalElaborationMessage *finishLocalMsg = dynamic_cast<FinishLocalElaborationMessage *>(msg);
 	if(finishLocalMsg != nullptr){
 		EV<<"Start executing the remain schedule for the latecomers change key data\n";
@@ -145,20 +158,19 @@ void Worker::handleMessage(cMessage *msg){
 		return;
 	}
 
-    ScheduleMessage *scheduleMsg = dynamic_cast<ScheduleMessage *>(msg);
-    if (scheduleMsg != nullptr) {
-        // Successfully cast to ScheduleMessage, handle it
-        handleScheduleMessage(scheduleMsg);
-        return;
-    }
+    FinishSimMessage *finishSimMsg = dynamic_cast<FinishSimMessage *>(msg);
+	if(finishSimMsg != nullptr){
+		handleFinishSimMessage(finishSimMsg);
+		return;
+	}
 
-    RestartMessage *restartMsg = dynamic_cast<RestartMessage *>(msg);
-    if(restartMsg != nullptr) {
-    	// Successfully cast to RestartMessage, handle it
-    	handleRestartMessage(restartMsg);
-    	return;
-    }
-    // TODO Other messages...
+	PingMessage *pingMsg = dynamic_cast<PingMessage *>(msg);
+	if(pingMsg != nullptr){
+		EV<<"\nReceived ping message at worker: "<<workerId<<"\n\n";
+		send(pingMsg, "out", LEADER_PORT);
+		return;
+	}
+
 }
 
 void Worker::handleSetupMessage(SetupMessage *msg){
@@ -192,26 +204,15 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 void Worker::handleScheduleMessage(ScheduleMessage *msg){
     int scheduleSize = msg->getScheduleArraySize();
 
-    std::vector<std::string> schedule;
-    std::vector<int> parameters;
-
     for(int i=0; i<scheduleSize; i++){
         schedule.push_back(msg->getSchedule(i)) ;
 		parameters.push_back(msg->getParameters(i));
     }
 
-	localDataExecution(schedule, parameters);
-
-	/*TODO: ADDING THE PART OF APPLYING THE SCHEDULE TO THE ALREADY PRESENT DATA OF THE CHANGE KEY
-		Instantiate a BatchLoader for the changeKey file
-		Retrieve the length of the data file to know how many iterations to run with the defined batch size
-		Load the data from the file by taking together the ones that arrived at the same point in the schedule (the minimum between the batch size and the data 
-		with the same arrival point in the schedule(possibility of producing more than one batch with the same remaining schedule if the data is more than the batch size))
-		Create a new schedule with the remaining operations for each batch 
-		Apply the schedule to the data
-	*/	
-
+	localDataExecution();
 	
+	changeKeyDataExecution();
+
 	EV<<"\nSENDING FINISHED LOCAL ELABORATION WORKER: "<<workerId<<"\n\n";
 	FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
 	finishLocalMsg->setWorkerId(workerId);
@@ -220,13 +221,39 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
 	delete msg;
 }
 
-void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg){
-	//TODO call the same function called for the already local change key data and then send the finish message
-	CheckChangeKeyAckMessage* checkChangeKeyAckMsg = new CheckChangeKeyAckMessage();
-	checkChangeKeyAckMsg->setWorkerId(workerId);
-	send(checkChangeKeyAckMsg, "out", 0);
-	EV<<"\nChangeKey checked at worker: "<<workerId<<"\n\n";
+void Worker::handleDataInsertMessage(DataInsertMessage *msg){
+	// Check if it is an ACK or an insertion to me (workerID)
+	if(msg->getAck()){
+		// Look for corresponding reqID and cancel timeout
+		int reqID = msg->getReqID();
 
+		auto timeoutMsg = timeouts.find(reqID);
+		if(timeoutMsg != timeouts.end()){
+			EV << "Received ACK, cancelling timeout";
+			cancelAndDelete(timeoutMsg->second);
+			timeouts.erase(reqID);
+		}
+
+		auto insertMsg = unstableMessages.find(reqID);
+		if(insertMsg != unstableMessages.end()){
+			EV << "Received ACK, deleting unstable message";
+			unstableMessages.erase(reqID);
+		}
+	} else {
+		// Insert new data point into data vector
+		int gateIndex = msg->getArrivalGate()->getIndex();
+		int senderID = getInboundWorkerID(gateIndex);
+
+		insertManager->insertValue(senderID, msg->getReqID(), msg->getScheduleStep(), msg->getData());
+
+		// Send back ACK after insertion
+		DataInsertMessage* insertMsg = new DataInsertMessage();
+		insertMsg->setReqID(msg->getReqID());
+		insertMsg->setAck(true);
+
+		send(insertMsg, "out", gateIndex);
+	}
+	
 	delete msg;
 }
 
@@ -243,7 +270,34 @@ void Worker::handleRestartMessage(RestartMessage *msg){
 	return;
 }
 
-void Worker::localDataExecution(std::vector<std::string> schedule, std::vector<int> parameters){
+void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg){
+	changeKeyDataExecution();
+	CheckChangeKeyAckMessage* checkChangeKeyAckMsg = new CheckChangeKeyAckMessage();
+	checkChangeKeyAckMsg->setWorkerId(workerId);
+	send(checkChangeKeyAckMsg, "out", 0);
+	EV<<"\nChangeKey checked at worker: "<<workerId<<"\n\n";
+
+	delete msg;
+}
+
+void Worker::handleFinishSimMessage(FinishSimMessage *msg){
+	EV<<"\nApplication finished at worker: "<<workerId<<"\n\n";
+	delete msg;
+}
+
+void Worker::initializeDataModules() {
+	// Instantiate a BatchLoader
+	fileProgressName = folder + "progress.txt";
+	loader = new BatchLoader(fileName, fileProgressName, batchSize);
+
+	// Instantiate an InsertManager
+	std::string insertFilename = folder + "inserted.csv";
+	std::string requestFilename = folder + "requests_log.csv";
+	insertManager = new InsertManager(insertFilename, requestFilename, batchSize);
+}
+
+
+void Worker::localDataExecution(){
 	for(int i=0; i<iterations; i++){
 		data = loader->loadBatch();
 		applySchedule(schedule, parameters, data);
@@ -253,43 +307,87 @@ void Worker::localDataExecution(std::vector<std::string> schedule, std::vector<i
 	}
 }
 
+void Worker::changeKeyDataExecution(){
+	std::map<int, std::vector<int>> changeKeyData;
+	std::vector<std::string> remainingSchedule;
+	std::vector<int> remainingParameters;
+	changeKeyData = insertManager->getBatch();
+	if(changeKeyData.empty()){
+		EV<<"\n\nNo change key data\n\n";
+		return;
+	}
+	while(!changeKeyData.empty()){
+		for(auto& pair : changeKeyData){
+			EV<<"Change key batch: \n";
+			printingVector(pair.second);
+			if(schedule.size() == pair.first+1){
+				EV<<"Changekey is the last operation, persisting the values\n";
+				persistingResult(pair.second);
+			}else{
+				remainingSchedule = getRemainingSchedule(pair.first+1);
+				remainingParameters = getRemainingParameters(pair.first+1);
+				
+				applySchedule(remainingSchedule, remainingParameters, pair.second);
+				if(failed){
+					return;
+				}
+			}
+		}
+		changeKeyData = insertManager->getBatch();
+	}
+}
 
-	
-void Worker::applySchedule(std::vector<std::string> schedule, std::vector<int> parameters, std::vector<int> currentData) {
-    int scheduleSize = schedule.size();
+std::vector<std::string> Worker::getRemainingSchedule(int scheduleStep){
+	std::vector<std::string> remainingSchedule;
+	for(int i=scheduleStep; i<schedule.size(); i++){
+		remainingSchedule.push_back(schedule[i]);
+	}
+	return remainingSchedule;
+}
+
+std::vector<int> Worker::getRemainingParameters(int scheduleStep){
+	std::vector<int> remainingParameters;
+	for(int i=scheduleStep; i<parameters.size(); i++){
+		remainingParameters.push_back(parameters[i]);
+	}
+	return remainingParameters;
+}
+
+void Worker::applySchedule(std::vector<std::string> localSchedule, std::vector<int> localParameters, std::vector<int> currentData) {
+    int scheduleSize = localSchedule.size();
     std::vector<int> discard;
 	int reducedValue = 0;
     for (int i = 0; i < scheduleSize; i++) {
         for (int j = 0; j < currentData.size(); j++) {
-			EV<<"Operation: "<<schedule[i]<<"\n";
+			EV<<"Operation: "<<localSchedule[i]<<"\n";
 			if(failureDetection()){
 				failed = true;
 				EV<<"FAILURE DETECTED AT WORKER: "<<workerId<<", deallocating memory\n";
 				deallocatingMemory();
 				return;
 			}
-            if (schedule[i] == "add" || schedule[i] == "sub" || schedule[i] == "mul" || schedule[i] == "div") {
-                currentData[j] = map(schedule[i], parameters[i], currentData[j]);
+            if (localSchedule[i] == "add" || localSchedule[i] == "sub" || localSchedule[i] == "mul" || localSchedule[i] == "div") {
+                currentData[j] = map(localSchedule[i], localParameters[i], currentData[j]);
 				EV<<"CurrentData after mapping: "<<currentData[j]<<"\n";
-            } else if (schedule[i] == "lt" || schedule[i] == "gt" || schedule[i] == "le" || schedule[i] == "ge") {
-                discard = filter(schedule[i], discard, currentData[j], parameters[i]);
+            } else if (localSchedule[i] == "lt" || localSchedule[i] == "gt" || localSchedule[i] == "le" || localSchedule[i] == "ge") {
+                discard = filter(localSchedule[i], discard, currentData[j], localParameters[i]);
                 if (j == currentData.size() - 1) {
                     currentData = discardingData(discard, currentData);
 					EV<<"Data after discarding: ";
 					printingVector(currentData);
 					discard.clear();
                 } 
-            } else if (schedule[i] == "reduce") {
+            } else if (localSchedule[i] == "reduce") {
 				reducedValue = reduce(currentData[j], reducedValue, j);
 				EV<<"Reduced value: "<<reducedValue<<"\n";
-            } else if (schedule[i] == "changekey") {
+            } else if (localSchedule[i] == "changekey") {
             	int newKey = changeKey(currentData[j], changeKeyProbability);
                 if(newKey != -1) {
-                	EV << "Changing Key: " << workerId << " -> " << newKey << std::endl;
+                	EV << "Changing Key: " << workerId << " -> " << newKey << "for value: "<<currentData[j]<<std::endl;
                 	sendData(newKey, currentData[j], i); // 'i' == Schedule step
                 }
             } else {
-                EV << "Invalid operation: " << schedule[i] << "\n";
+                EV << "Invalid operation: " << localSchedule[i] << "\n";
             }
         }
     }
@@ -298,36 +396,6 @@ void Worker::applySchedule(std::vector<std::string> schedule, std::vector<int> p
 	}else{
 		persistingResult(currentData);
 	}
-}
-
-bool Worker::failureDetection(){
-	int res = bernoulli(failureProbability);
-	if(res){
-		return true;
-	}
-	return false;
-
-}
-
-void Worker::deallocatingMemory(){
-	data.clear();
-	for (auto& pair : unstableMessages) {
-		cancelAndDelete(pair.second);
-	}
-	unstableMessages.clear();
-	for(auto& pair : timeouts){
-		cancelAndDelete(pair.second);
-	}
-	timeouts.clear();
-
-	fileName = "";
-	fileProgressName = "";
-	batchSize = 0;
-	failureProbability = 0;
-	workerId = 0;
-	timeout = 0;
-	iterations = 0;
-	delete loader;
 }
 
 int Worker::map(std::string operation, int parameter, int data){
@@ -373,76 +441,9 @@ std::vector<int> Worker::filter(std::string operation, std::vector<int> discard,
 	return discard;
 }
 
-std::vector<int> Worker::discardingData(std::vector<int> discard, std::vector<int> data) {
-    for (int i = discard.size() - 1; i >= 0; i--) {
-        if (discard[i] == 1) {
-            data.erase(data.begin() + i);
-        }
-    }
-    return data;
-}
-
-void Worker::persistingResult(std::vector<int> result) {
-    std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
-    std::ofstream result_file;
-
-    std::string fileName = folder + "result.csv";
-    result_file.open(fileName, std::ios_base::app); // Open file in append mode
-
-    for (int i = 0; i < result.size(); i++) {
-        // Append data to the file
-        result_file << result[i] << '\n';
-    }
-
-    result_file.close();
-}
-
-void Worker::printingVector(std::vector<int> vector){
-    for(int i=0; i<vector.size(); i++){
-        EV<<vector[i]<<" ";
-    }
-    EV<<"\n";
-}
-
-void Worker::handleDataInsertMessage(DataInsertMessage *msg){
-	// Check if it is an ACK or an insertion to me (workerID)
-	if(msg->getAck()){
-		// Look for corresponding reqID and cancel timeout
-		int reqID = msg->getReqID();
-
-		auto timeoutMsg = timeouts.find(reqID);
-		if(timeoutMsg != timeouts.end()){
-			EV << "Received ACK, cancelling timeout";
-			cancelAndDelete(timeoutMsg->second);
-			timeouts.erase(reqID);
-		}
-
-		auto insertMsg = unstableMessages.find(reqID);
-		if(insertMsg != unstableMessages.end()){
-			EV << "Received ACK, deleting unstable message";
-			unstableMessages.erase(reqID);
-		}
-	} else {
-		// Insert new data point into data vector
-		int gateIndex = msg->getArrivalGate()->getIndex();
-		int senderID = getInboundWorkerID(gateIndex);
-
-		insertManager->insertValue(senderID, msg->getReqID(), msg->getScheduleStep(), msg->getData());
-
-		// Send back ACK after insertion
-		DataInsertMessage* insertMsg = new DataInsertMessage();
-		insertMsg->setReqID(msg->getReqID());
-		insertMsg->setAck(true);
-
-		send(insertMsg, "out", gateIndex);
-	}
-	
-	delete msg;
-}
-
 int Worker::changeKey(int data, float probability){
 	int ckValue = data % (static_cast<int>(1/(probability))*numWorkers);
-	if(ckValue == workerId || ckValue >= numWorkers) {
+	if(ckValue == workerId || ckValue >= numWorkers || ckValue < 0) {
 		return -1;
 	}
 	return ckValue;
@@ -467,23 +468,44 @@ int Worker::reduce(int data, int reducedValue, int iteration){
     return reducedValue; 
 }
 
-void Worker::persistingReduce(int reducedValue){
-	std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
-	std::string fileName = folder + "result.csv";
-
-	std::ofstream result_file(fileName);
-	if(result_file.is_open()){
-		EV << "Opened reduce file\n";
-		result_file << reducedValue;
-
-		result_file.close();
-		
-	}else{
-		EV << "Can't open file: " << fileName << "\n";
+bool Worker::failureDetection(){
+	int res = bernoulli(failureProbability);
+	if(res){
+		return true;
 	}
-	
+	return false;
+
 }
 
+void Worker::deallocatingMemory(){
+	data.clear();
+	for (auto& pair : unstableMessages) {
+		cancelAndDelete(pair.second);
+	}
+	unstableMessages.clear();
+	for(auto& pair : timeouts){
+		cancelAndDelete(pair.second);
+	}
+	timeouts.clear();
+
+	fileName = "";
+	fileProgressName = "";
+	batchSize = 0;
+	failureProbability = 0;
+	workerId = 0;
+	timeout = 0;
+	iterations = 0;
+	delete loader;
+}
+
+std::vector<int> Worker::discardingData(std::vector<int> discard, std::vector<int> data) {
+    for (int i = discard.size() - 1; i >= 0; i--) {
+        if (discard[i] == 1) {
+            data.erase(data.begin() + i);
+        }
+    }
+    return data;
+}
 
 void Worker::sendData(int newKey, int value, int scheduleStep){
 	// Create message
@@ -517,17 +539,6 @@ void Worker::sendData(int newKey, int value, int scheduleStep){
 	changeKeyCtr++;
 }
 
-void Worker::initializeDataModules() {
-	// Instantiate a BatchLoader
-	fileProgressName = folder + "progress.txt";
-	loader = new BatchLoader(fileName, fileProgressName, batchSize);
-
-	// Instantiate an InsertManager
-	std::string insertFilename = folder + "inserted.csv";
-	std::string requestFilename = folder + "requests_log.csv";
-	insertManager = new InsertManager(insertFilename, requestFilename, batchSize);
-}
-
 int Worker::getInboundWorkerID(int gateIndex) {
 	if(gateIndex <= workerId) {
 		return gateIndex - 1;
@@ -545,4 +556,43 @@ int Worker::getWorkerGate(int destID){
 	}
 	EV << "Error: self getWorkerGate";
 	return -1;
+}
+
+void Worker::persistingResult(std::vector<int> result) {
+    std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
+    std::ofstream result_file;
+
+    std::string fileName = folder + "result.csv";
+    result_file.open(fileName, std::ios_base::app); // Open file in append mode
+
+    for (int i = 0; i < result.size(); i++) {
+        // Append data to the file
+        result_file << result[i] << '\n';
+    }
+
+    result_file.close();
+}
+
+void Worker::persistingReduce(int reducedValue){
+	std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
+	std::string fileName = folder + "result.csv";
+
+	std::ofstream result_file(fileName);
+	if(result_file.is_open()){
+		EV << "Opened reduce file\n";
+		result_file << reducedValue;
+
+		result_file.close();
+		
+	}else{
+		EV << "Can't open file: " << fileName << "\n";
+	}
+	
+}
+
+void Worker::printingVector(std::vector<int> vector){
+    for(int i=0; i<vector.size(); i++){
+        EV<<vector[i]<<" ";
+    }
+    EV<<"\n";
 }
