@@ -37,23 +37,26 @@ private:
 	int workerId;
 	float timeout;
 	int iterations;
+	int currentBatch;
 	bool failed;
+	bool localFinish;
 	int changeKeyCtr;
 	int numWorkers;
 	float changeKeyProbability;
 
+	cMessage *localExEvent;
+	cMessage *changeKeyExEvent;
 protected:
 	virtual void initialize() override;
 	virtual void handleMessage(cMessage *msg) override;
 	void handleSetupMessage(SetupMessage *msg);
 	void handleScheduleMessage(ScheduleMessage *msg);
+	void handleLocalExEvent(cMessage *msg);
 	void handleDataInsertMessage(DataInsertMessage *msg);
-	void handleRestartMessage(RestartMessage *msg);
+	void handleChangeKeyExEvent(cMessage *msg);
 	void handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg);
 	void handleFinishSimMessage(FinishSimMessage *msg);
 	void initializeDataModules();
-	void localDataExecution();
-	void changeKeyDataExecution();
 	std::vector<int> getRemainingParameters(int scheduleStep);
 	std::vector<std::string> getRemainingSchedule(int scheduleStep);
 	void applySchedule(std::vector<std::string> schedule, std::vector<int> parameters, std::vector<int> currentData);
@@ -81,10 +84,12 @@ void Worker::initialize(){
 	failureProbability = (par("failureProbability").intValue()) / 1000.0;
 	numWorkers = par("numWorkers").intValue();
 	failed = false;
+	localFinish = false;
 	data.resize(batchSize);
 	timeout=5;
 	changeKeyCtr = 0;
 	changeKeyProbability = 0.1;
+	currentBatch = 0;
 }
 
 void Worker::handleMessage(cMessage *msg){
@@ -135,7 +140,17 @@ void Worker::handleMessage(cMessage *msg){
         handleScheduleMessage(scheduleMsg);
         return;
     }
-	
+
+	if(msg == localExEvent){
+		EV<<"\nLocalExEvent at worker: "<<workerId<<"\n\n";
+		handleLocalExEvent(msg);
+		return;
+	}
+	if(msg == changeKeyExEvent){
+		EV<<"\nChangeKeyExEvent at worker: "<<workerId<<"\n\n";
+		handleChangeKeyExEvent(msg);
+		return;
+	}
     // DataInsertMessage (Could be either to insert here, or an ACK)
     DataInsertMessage *dataInsertMsg = dynamic_cast<DataInsertMessage *>(msg);
     if(dataInsertMsg != nullptr){
@@ -143,16 +158,10 @@ void Worker::handleMessage(cMessage *msg){
     	handleDataInsertMessage(dataInsertMsg);
     	return;
     }
-	
-	RestartMessage *restartMsg = dynamic_cast<RestartMessage *>(msg);
-    if(restartMsg != nullptr) {
-    	// Successfully cast to RestartMessage, handle it
-    	handleRestartMessage(restartMsg);
-    	return;
-    }
 
 	FinishLocalElaborationMessage *finishLocalMsg = dynamic_cast<FinishLocalElaborationMessage *>(msg);
 	if(finishLocalMsg != nullptr){
+		localFinish = true;
 		EV<<"Start executing the remain schedule for the latecomers change key data\n";
 		handleFinishLocalElaborationMessage(finishLocalMsg);
 		return;
@@ -163,14 +172,6 @@ void Worker::handleMessage(cMessage *msg){
 		handleFinishSimMessage(finishSimMsg);
 		return;
 	}
-
-	PingMessage *pingMsg = dynamic_cast<PingMessage *>(msg);
-	if(pingMsg != nullptr){
-		EV<<"\nReceived ping message at worker: "<<workerId<<"\n\n";
-		send(pingMsg, "out", LEADER_PORT);
-		return;
-	}
-
 }
 
 void Worker::handleSetupMessage(SetupMessage *msg){
@@ -202,23 +203,35 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 }
 
 void Worker::handleScheduleMessage(ScheduleMessage *msg){
+	
     int scheduleSize = msg->getScheduleArraySize();
 
     for(int i=0; i<scheduleSize; i++){
         schedule.push_back(msg->getSchedule(i)) ;
 		parameters.push_back(msg->getParameters(i));
     }
-
-	localDataExecution();
-	
-	changeKeyDataExecution();
-
-	EV<<"\nSENDING FINISHED LOCAL ELABORATION WORKER: "<<workerId<<"\n\n";
-	FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
-	finishLocalMsg->setWorkerId(workerId);
-	send(finishLocalMsg, "out", 0);	
-	
+	localExEvent = new cMessage("LocalExEvent");
+	scheduleAt(simTime(), localExEvent);
 	delete msg;
+}
+
+void Worker::handleLocalExEvent(cMessage *msg){
+	
+	if(currentBatch < iterations){
+		data = loader->loadBatch();	
+		applySchedule(schedule, parameters, data);
+		if(failed){
+			return;
+		}
+		localExEvent = new cMessage("LocalExEvent");
+        scheduleAt(simTime() + 2 , localExEvent);
+		currentBatch++;
+    }else{
+		EV<<"\nSENDING FINISHED LOCAL ELABORATION WORKER: "<<workerId<<"\n\n";
+		FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
+		finishLocalMsg->setWorkerId(workerId);
+		send(finishLocalMsg, "out", 0);	
+	}
 }
 
 void Worker::handleDataInsertMessage(DataInsertMessage *msg){
@@ -253,25 +266,49 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 
 		send(insertMsg, "out", gateIndex);
 	}
-	
+	changeKeyExEvent = new cMessage("ChangeKeyExEvent");
+	scheduleAt(simTime(), changeKeyExEvent);
 	delete msg;
 }
 
-void Worker::handleRestartMessage(RestartMessage *msg){
-	if(!failed){
-		EV << "Worker " << workerId << " received a RestartMessage, but has not failed!" << std::endl;
-		return;
+void Worker::handleChangeKeyExEvent(cMessage *msg){
+	std::map<int, std::vector<int>> changeKeyData;
+	std::vector<std::string> remainingSchedule;
+	std::vector<int> remainingParameters;
+	changeKeyData = insertManager->getBatch();
+	if(!changeKeyData.empty()){
+		for(auto& pair : changeKeyData){
+			EV<<"Change key batch: \n";
+			printingVector(pair.second);
+			EV<<"\n";
+			if(schedule.size() == pair.first+1){
+				EV<<"Changekey is the last operation, persisting the values\n";
+				persistingResult(pair.second);
+			}else{
+				remainingSchedule = getRemainingSchedule(pair.first+1);
+				remainingParameters = getRemainingParameters(pair.first+1);
+				
+				applySchedule(remainingSchedule, remainingParameters, pair.second);
+			}
+			if(failed){
+				return;
+			}
+		}
+		changeKeyExEvent = new cMessage("ChangeKeyExEvent");
+		scheduleAt(simTime() + 2 , changeKeyExEvent);
+	}else{
+		if(localFinish){
+			EV<<"\nSENDING FINISHED SIMULATION WORKER: "<<workerId<<"\n\n";
+			FinishSimMessage* finishSimMsg = new FinishSimMessage();
+			finishSimMsg->setWorkerId(workerId);
+			send(finishSimMsg, "out", 0);
+		}
 	}
-	failed = false;
-
-	workerId = msg->getWorkerID();
-	initializeDataModules();
-	// Re-Initialized worker and data modules, now wait for schedule and re-start processing
-	return;
 }
 
 void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg){
-	changeKeyDataExecution();
+	changeKeyExEvent = new cMessage("ChangeKeyExEvent");
+	scheduleAt(simTime() + 2 , changeKeyExEvent);
 	CheckChangeKeyAckMessage* checkChangeKeyAckMsg = new CheckChangeKeyAckMessage();
 	checkChangeKeyAckMsg->setWorkerId(workerId);
 	send(checkChangeKeyAckMsg, "out", 0);
@@ -296,47 +333,6 @@ void Worker::initializeDataModules() {
 	insertManager = new InsertManager(insertFilename, requestFilename, batchSize);
 }
 
-
-void Worker::localDataExecution(){
-	for(int i=0; i<iterations; i++){
-		data = loader->loadBatch();
-		applySchedule(schedule, parameters, data);
-		if(failed){
-			return;
-		}
-	}
-}
-
-void Worker::changeKeyDataExecution(){
-	std::map<int, std::vector<int>> changeKeyData;
-	std::vector<std::string> remainingSchedule;
-	std::vector<int> remainingParameters;
-	changeKeyData = insertManager->getBatch();
-	if(changeKeyData.empty()){
-		EV<<"\n\nNo change key data\n\n";
-		return;
-	}
-	while(!changeKeyData.empty()){
-		for(auto& pair : changeKeyData){
-			EV<<"Change key batch: \n";
-			printingVector(pair.second);
-			if(schedule.size() == pair.first+1){
-				EV<<"Changekey is the last operation, persisting the values\n";
-				persistingResult(pair.second);
-			}else{
-				remainingSchedule = getRemainingSchedule(pair.first+1);
-				remainingParameters = getRemainingParameters(pair.first+1);
-				
-				applySchedule(remainingSchedule, remainingParameters, pair.second);
-				if(failed){
-					return;
-				}
-			}
-		}
-		changeKeyData = insertManager->getBatch();
-	}
-}
-
 std::vector<std::string> Worker::getRemainingSchedule(int scheduleStep){
 	std::vector<std::string> remainingSchedule;
 	for(int i=scheduleStep; i<schedule.size(); i++){
@@ -359,7 +355,6 @@ void Worker::applySchedule(std::vector<std::string> localSchedule, std::vector<i
 	int reducedValue = 0;
     for (int i = 0; i < scheduleSize; i++) {
         for (int j = 0; j < currentData.size(); j++) {
-			EV<<"Operation: "<<localSchedule[i]<<"\n";
 			if(failureDetection()){
 				failed = true;
 				EV<<"FAILURE DETECTED AT WORKER: "<<workerId<<", deallocating memory\n";
@@ -367,14 +362,19 @@ void Worker::applySchedule(std::vector<std::string> localSchedule, std::vector<i
 				return;
 			}
             if (localSchedule[i] == "add" || localSchedule[i] == "sub" || localSchedule[i] == "mul" || localSchedule[i] == "div") {
+				EV<<"Mapping: "<<currentData[j]<<" "<<localSchedule[i]<<" "<<localParameters[i];
                 currentData[j] = map(localSchedule[i], localParameters[i], currentData[j]);
-				EV<<"CurrentData after mapping: "<<currentData[j]<<"\n";
+				EV<<" = "<<currentData[j]<<"\n";
             } else if (localSchedule[i] == "lt" || localSchedule[i] == "gt" || localSchedule[i] == "le" || localSchedule[i] == "ge") {
                 discard = filter(localSchedule[i], discard, currentData[j], localParameters[i]);
                 if (j == currentData.size() - 1) {
-                    currentData = discardingData(discard, currentData);
-					EV<<"Data after discarding: ";
+					EV<<"Filtering: ";
 					printingVector(currentData);
+					EV<<localSchedule[i]<<" "<<localParameters[i];
+                    currentData = discardingData(discard, currentData);
+					EV<<" = ";
+					printingVector(currentData);
+					EV<<"\n";
 					discard.clear();
                 } 
             } else if (localSchedule[i] == "reduce") {
@@ -383,7 +383,7 @@ void Worker::applySchedule(std::vector<std::string> localSchedule, std::vector<i
             } else if (localSchedule[i] == "changekey") {
             	int newKey = changeKey(currentData[j], changeKeyProbability);
                 if(newKey != -1) {
-                	EV << "Changing Key: " << workerId << " -> " << newKey << "for value: "<<currentData[j]<<std::endl;
+                	EV << "Changing Key: " << workerId << " -> " << newKey << " for value: "<<currentData[j]<<std::endl;
                 	sendData(newKey, currentData[j], i); // 'i' == Schedule step
                 }
             } else {
@@ -594,5 +594,4 @@ void Worker::printingVector(std::vector<int> vector){
     for(int i=0; i<vector.size(); i++){
         EV<<vector[i]<<" ";
     }
-    EV<<"\n";
 }
