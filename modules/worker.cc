@@ -364,7 +364,7 @@ void Worker::applySchedule(std::vector<std::string> localSchedule, std::vector<i
             if (localSchedule[i] == "add" || localSchedule[i] == "sub" || localSchedule[i] == "mul" || localSchedule[i] == "div") {
 				EV<<"Mapping: "<<currentData[j]<<" "<<localSchedule[i]<<" "<<localParameters[i];
                 currentData[j] = map(localSchedule[i], localParameters[i], currentData[j]);
-				EV<<" = "<<currentData[j]<<"\n";
+				EV<<" = "<<currentData[j]<<"  ";
             } else if (localSchedule[i] == "lt" || localSchedule[i] == "gt" || localSchedule[i] == "le" || localSchedule[i] == "ge") {
                 discard = filter(localSchedule[i], discard, currentData[j], localParameters[i]);
                 if (j == currentData.size() - 1) {
@@ -374,7 +374,6 @@ void Worker::applySchedule(std::vector<std::string> localSchedule, std::vector<i
                     currentData = discardingData(discard, currentData);
 					EV<<" = ";
 					printingVector(currentData);
-					EV<<"\n";
 					discard.clear();
                 } 
             } else if (localSchedule[i] == "reduce") {
@@ -383,13 +382,17 @@ void Worker::applySchedule(std::vector<std::string> localSchedule, std::vector<i
             } else if (localSchedule[i] == "changekey") {
             	int newKey = changeKey(currentData[j], changeKeyProbability);
                 if(newKey != -1) {
-                	EV << "Changing Key: " << workerId << " -> " << newKey << " for value: "<<currentData[j]<<std::endl;
+                	EV << "Changing Key: " << workerId << " -> " << newKey << " for value: "<<currentData[j]<<"\n";
                 	sendData(newKey, currentData[j], i); // 'i' == Schedule step
                 }
             } else {
                 EV << "Invalid operation: " << localSchedule[i] << "\n";
             }
         }
+		if(currentData.size() > 0 && localSchedule[i] != "changekey"){
+			EV<<"\n";
+		}
+		
     }
 	if(schedule[scheduleSize-1] == "reduce" && currentData.size() > 0){
 		persistingReduce(reducedValue);
