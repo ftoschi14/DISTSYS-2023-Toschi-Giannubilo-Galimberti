@@ -21,6 +21,8 @@
 #define FINISH_EXEC_DELAY 2
 #define PING_DELAY_AVG 0
 #define PING_DELAY_VAR 1
+#define RESTART_DELAY_AVG 5
+#define RESTART_DELAY_VAR 2
 
 using namespace omnetpp;
 
@@ -64,6 +66,7 @@ protected:
 	void handleChangeKeyExEvent(cMessage *msg);
 	void handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg);
 	void handleFinishSimMessage(FinishSimMessage *msg);
+	void handleRestartMessage(RestartMessage *msg);
 	void initializeDataModules();
 	std::vector<int> getRemainingParameters(int scheduleStep);
 	std::vector<std::string> getRemainingSchedule(int scheduleStep);
@@ -197,6 +200,13 @@ void Worker::handleMessage(cMessage *msg){
 		handleFinishSimMessage(finishSimMsg);
 		return;
 	}
+
+	RestartMessage *restartMsg = dynamic_cast<RestartMessage *>(msg);
+    if(restartMsg != nullptr) {
+    	// Successfully cast to RestartMessage, handle it
+    	handleRestartMessage(restartMsg);
+    	return;
+    }
 }
 
 void Worker::handlePingMessage(cMessage *msg){
@@ -354,6 +364,24 @@ void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *
 	EV<<"\nChangeKey checked at worker: "<<workerId<<"\n\n";
 
 	delete msg;
+}
+
+void Worker::handleRestartMessage(RestartMessage *msg){
+	if(!failed){
+		EV << "Worker " << workerId << " received a RestartMessage, but has not failed: Restarting..." << std::endl;
+		deallocatingMemory();
+	}
+	failed = false;
+	workerId = msg->getWorkerID();
+	initializeDataModules();
+	// Re-Initialized worker and data modules, now wait for schedule and re-start processing
+	localExEvent = new cMessage("LocalExEvent");
+	float delay = lognormal(RESTART_DELAY_AVG, RESTART_DELAY_VAR);
+
+	scheduleAt(simTime() + delay, localExEvent);
+	
+	delete msg;
+	return;
 }
 
 void Worker::handleFinishSimMessage(FinishSimMessage *msg){
