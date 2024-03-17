@@ -31,125 +31,145 @@
 #define CHANGEKEY_EXEC_TIME_AVG 0.0005
 #define CHANGEKEY_EXEC_TIME_STD 0.0005
 
-#define FINISH_EXEC_DELAY 0.2
+#define FINISH_EXEC_DELAY_AVG 0.02
+#define FINISH_EXEC_DELAY_STD 0.02
+
 #define PING_DELAY_AVG 0
-#define PING_DELAY_VAR 0.1
+#define PING_DELAY_STD 0.01
+
 #define RESTART_DELAY_AVG 0.5
-#define RESTART_DELAY_VAR 0.02
+#define RESTART_DELAY_STD 0.02
 
 using namespace omnetpp;
 
 class Worker : public cSimpleModule{
 private:
+	// Data structures to hold batch, and insertions in progress
 	std::map<int, std::deque<int>> data;
 	std::map<int, DataInsertMessage*> unstableMessages;
 	std::map<int, cMessage*> timeouts;
+
+	// Information on working folder and files
 	std::string folder;
 	std::string fileName;
 	std::string fileProgressName;
+
+	// Data loader instances
 	BatchLoader* loader;
 	InsertManager* insertManager;
-	float failureProbability;
-	int workerId;
-	float timeout;
-	bool failed;
-	bool localFinish;
-	int changeKeyCtr;
-	int numWorkers;
-	float changeKeyProbability;
 
+	// Worker information
+	int workerId;
+	int numWorkers;
+	int changeKeyCtr;
+	float failureProbability;
+	float changeKeyProbability;
+	bool failed;
+
+	// Current Batch Elaboration information
 	int currentScheduleStep;
-	int currentDataIndex;
-	int iterations;
-	int currentBatch;
 	int batchSize;
 	bool reduceLast;
-
 	bool localBatch;
 
+	// General Elaboration Information
 	bool finishedLocalElaboration;
 	bool finishedPartialCK;
 	bool checkChangeKeyReceived;
-
 	bool finishNoticeSent;
+	std::vector<std::string> schedule;
+	std::vector<int> parameters;
 
+	// Partial Results
 	int tmpReduce;
 	std::vector<int> tmpResult;
 
-    std::vector<int> parameters;
-	std::vector<std::string> schedule;
-
-	cMessage *localExEvent;
-	cMessage *changeKeyExEvent;
+	// Event Message holders
 	cMessage *pingResEvent;
 	cMessage *nextStepMsg;
 
+	// Ping reply holder
 	PingMessage *replyPingMsg;
 protected:
 	virtual void initialize() override;
+
+	// Message handling
 	virtual void handleMessage(cMessage *msg) override;
 	void handlePingMessage(cMessage *msg);
 	void handleSetupMessage(SetupMessage *msg);
 	void handleScheduleMessage(ScheduleMessage *msg);
-	void handleLocalExEvent(cMessage *msg);
 	void handleDataInsertMessage(DataInsertMessage *msg);
-	void handleChangeKeyExEvent(cMessage *msg);
 	void handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg);
 	void handleFinishSimMessage(FinishSimMessage *msg);
 	void handleRestartMessage(RestartMessage *msg);
+
+	// Processing data
 	void processStep();
 	void processReduce();
 	void loadNextBatch();
 	bool applyOperation(int& value);
+
+	// Next event scheduling
 	float calculateDelay(const std::string& operation);
-	void initializeDataModules();
-	std::vector<int> getRemainingParameters(int scheduleStep);
-	std::vector<std::string> getRemainingSchedule(int scheduleStep);
-	void applySchedule(std::vector<std::string> schedule, std::vector<int> parameters, std::vector<int> currentData);
+
+	// Worker operations
 	int map(std::string operation, int parameter, int data);
 	bool filter(std::string operation, int parameter, int data);
 	int changeKey(int data, float probability);
 	int reduce(std::vector<int> data);
+
+	//Crash related functions
+	void initializeDataModules();
 	void loadPartialReduce();
 	bool failureDetection();
 	void deallocatingMemory();
-	std::vector<int> discardingData(std::vector<int> discard, std::vector<int> data);
+
+	// ChangeKey Remote Data Insertion
 	void sendData(int newKey, int value, int scheduleStep);
+
+	// Network utilities
 	int getWorkerGate(int destID);
 	int getInboundWorkerID(int gateIndex);
+
+	// Persisting functions
 	void persistingResult(std::vector<int> result);
 	void persistingReduce(int reduce);
+
+	// Other utils
 	void printingVector(std::vector<int> vector);
-	
 };
 
 Define_Module(Worker);
 
 void Worker::initialize(){
-	// TODO
 	batchSize = par("batchSize").intValue();
 	failureProbability = (par("failureProbability").intValue()) / 1000.0;
 	numWorkers = par("numWorkers").intValue();
-	failed = false;
-	localFinish = false;
-	timeout=5;
-	changeKeyCtr = 0;
-	changeKeyProbability = 0.75;
-	currentBatch = 0;
+
+	changeKeyProbability = 0.35;
 	localBatch = true;
+	failed = false;
 }
 
 void Worker::handleMessage(cMessage *msg){
-	/* Timeout Message chunk
-	*  Get the context pointer, if not null it should correspond to a request ID
-	*  Get the corresponding timeout and insertMsg, re-send it and re-schedule a timeout.
-	*/
 	if(msg == nextStepMsg) {
 		delete msg;
 		processStep();
 
 		return;
 	}
+
+    if(msg == pingResEvent){
+    	EV<<"\nPingResEvent at worker: "<<workerId<<"\n\n";
+    	handlePingMessage(msg);
+    	delete msg;
+    	return;
+    }
+
+	/* Timeout Message chunk
+	*  Get the context pointer, if not null it should correspond to a request ID
+	*  Get the corresponding timeout and insertMsg, re-send it and re-schedule a timeout.
+	*/
 	int *pReqID = static_cast<int *>(msg->getContextPointer());
 	if(pReqID != nullptr){
 		int reqID = *pReqID;
@@ -185,7 +205,7 @@ void Worker::handleMessage(cMessage *msg){
 	if(pingMsg != nullptr){
 		replyPingMsg = pingMsg;
 		// Generate random delay
-		float delay = lognormal(PING_DELAY_AVG, PING_DELAY_VAR); // Log-normal to have always positive increments
+		float delay = lognormal(PING_DELAY_AVG, PING_DELAY_STD); // Log-normal to have always positive increments
 		pingResEvent = new cMessage("PingResEvent");
 		// Schedule response event
         scheduleAt(simTime() + delay , pingResEvent);
@@ -196,6 +216,7 @@ void Worker::handleMessage(cMessage *msg){
     if(setupMsg != nullptr){
         // Successfully cast to SetupMessage, handle it
         handleSetupMessage(setupMsg);
+    	delete msg;
         return;
     }
 
@@ -203,43 +224,30 @@ void Worker::handleMessage(cMessage *msg){
     if (scheduleMsg != nullptr) {
         // Successfully cast to ScheduleMessage, handle it
         handleScheduleMessage(scheduleMsg);
+    	delete msg;
         return;
     }
-
-    if(msg == pingResEvent){
-    	EV<<"\nPingResEvent at worker: "<<workerId<<"\n\n";
-    	handlePingMessage(msg);
-    	return;
-    }
-	if(msg == localExEvent){
-		EV<<"\nLocalExEvent at worker: "<<workerId<<"\n\n";
-		handleLocalExEvent(msg);
-		return;
-	}
-	if(msg == changeKeyExEvent){
-		EV<<"\nChangeKeyExEvent at worker: "<<workerId<<"\n\n";
-		handleChangeKeyExEvent(msg);
-		return;
-	}
     // DataInsertMessage (Could be either to insert here, or an ACK)
     DataInsertMessage *dataInsertMsg = dynamic_cast<DataInsertMessage *>(msg);
     if(dataInsertMsg != nullptr){
     	//Successfully cast to DataInsertMessage, handle it
     	handleDataInsertMessage(dataInsertMsg);
+    	delete msg;
     	return;
     }
 
 	FinishLocalElaborationMessage *finishLocalMsg = dynamic_cast<FinishLocalElaborationMessage *>(msg);
 	if(finishLocalMsg != nullptr){
-		localFinish = true;
 		EV<<"Start executing the remain schedule for the latecomers change key data\n";
 		handleFinishLocalElaborationMessage(finishLocalMsg);
+    	delete msg;
 		return;
 	}
 
     FinishSimMessage *finishSimMsg = dynamic_cast<FinishSimMessage *>(msg);
 	if(finishSimMsg != nullptr){
 		handleFinishSimMessage(finishSimMsg);
+    	delete msg;
 		return;
 	}
 
@@ -247,6 +255,7 @@ void Worker::handleMessage(cMessage *msg){
     if(restartMsg != nullptr) {
     	// Successfully cast to RestartMessage, handle it
     	handleRestartMessage(restartMsg);
+    	delete msg;
     	return;
     }
 }
@@ -255,8 +264,7 @@ void Worker::handlePingMessage(cMessage *msg){
 	EV<<"\nReceived ping message at worker: "<<workerId<<"\n\n";
 	
 	send(replyPingMsg, "out", LEADER_PORT);
-	
-	delete msg;
+	replyPingMsg = nullptr;
 	return;
 }
 
@@ -284,8 +292,6 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 	data_file.close();
 
 	initializeDataModules();
-
-	delete msg;
 }
 
 void Worker::handleScheduleMessage(ScheduleMessage *msg){
@@ -302,10 +308,6 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
 
 	nextStepMsg = new cMessage("NextStep");
 	scheduleAt(simTime(), nextStepMsg);
-	delete msg;
-}
-
-void Worker::handleLocalExEvent(cMessage *msg){
 }
 
 void Worker::handleDataInsertMessage(DataInsertMessage *msg){
@@ -342,19 +344,16 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 
 		send(insertMsg, "out", gateIndex);
 	}
-	delete msg;
-}
-
-void Worker::handleChangeKeyExEvent(cMessage *msg){
 }
 
 void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg){
 	nextStepMsg = new cMessage("NextStep");
-	scheduleAt(simTime() + FINISH_EXEC_DELAY , nextStepMsg);
+
+	float delay = lognormal(FINISH_EXEC_DELAY_AVG, FINISH_EXEC_DELAY_STD);
+	scheduleAt(simTime() + delay , nextStepMsg);
 
 	checkChangeKeyReceived = true;
 	finishedPartialCK = false;
-	delete msg;
 }
 
 void Worker::handleRestartMessage(RestartMessage *msg){
@@ -369,7 +368,7 @@ void Worker::handleRestartMessage(RestartMessage *msg){
 	if(reduceLast) loadPartialReduce();
 
 	nextStepMsg = new cMessage("NextStep");
-	float delay = lognormal(RESTART_DELAY_AVG, RESTART_DELAY_VAR);
+	float delay = lognormal(RESTART_DELAY_AVG, RESTART_DELAY_STD);
 
 	scheduleAt(simTime() + delay, nextStepMsg);
 	return;
@@ -377,7 +376,6 @@ void Worker::handleRestartMessage(RestartMessage *msg){
 
 void Worker::handleFinishSimMessage(FinishSimMessage *msg){
 	EV<<"\nApplication finished at worker: "<<workerId<<"\n\n";
-	delete msg;
 }
 
 void Worker::initializeDataModules() {
@@ -389,22 +387,6 @@ void Worker::initializeDataModules() {
 	std::string insertFilename = folder + "inserted.csv";
 	std::string requestFilename = folder + "requests_log.csv";
 	insertManager = new InsertManager(insertFilename, requestFilename, batchSize);
-}
-
-std::vector<std::string> Worker::getRemainingSchedule(int scheduleStep){
-	std::vector<std::string> remainingSchedule;
-	for(int i=scheduleStep; i<schedule.size(); i++){
-		remainingSchedule.push_back(schedule[i]);
-	}
-	return remainingSchedule;
-}
-
-std::vector<int> Worker::getRemainingParameters(int scheduleStep){
-	std::vector<int> remainingParameters;
-	for(int i=scheduleStep; i<parameters.size(); i++){
-		remainingParameters.push_back(parameters[i]);
-	}
-	return remainingParameters;
 }
 
 void Worker::processStep(){
@@ -425,7 +407,9 @@ void Worker::processStep(){
 			persistingResult(tmpResult);
 			tmpResult.clear();
 		}
+
 		loadNextBatch();
+		
 		EV<<"Status - Worker " << workerId << " - FinishedLocal: " << finishedLocalElaboration << " - FinishedCK: " << finishedPartialCK << " - CheckCKReceived: " << checkChangeKeyReceived << std::endl;
 		
 		if(finishedLocalElaboration && finishedPartialCK && !finishNoticeSent) {
@@ -569,10 +553,6 @@ float Worker::calculateDelay(const std::string& operation){
 	return 0;
 }
 
-void Worker::applySchedule(std::vector<std::string> localSchedule, std::vector<int> localParameters, std::vector<int> currentData) {
-    
-}
-
 int Worker::map(std::string operation, int parameter, int data){
 	if(operation == "add"){
 		return data + parameter;
@@ -663,20 +643,40 @@ void Worker::deallocatingMemory(){
 	fileName = "";
 	fileProgressName = "";
 	batchSize = 0;
-	failureProbability = 0;
 	workerId = 0;
-	timeout = 0;
-	iterations = 0;
-	delete loader;
-}
 
-std::vector<int> Worker::discardingData(std::vector<int> discard, std::vector<int> data) {
-    for (int i = discard.size() - 1; i >= 0; i--) {
-        if (discard[i] == 1) {
-            data.erase(data.begin() + i);
-        }
-    }
-    return data;
+	// Data loader instances
+	delete loader;
+	delete insertManager;
+
+	// Worker information
+	numWorkers = 0;
+	changeKeyCtr = 0;
+
+	// Current Batch Elaboration information
+	currentScheduleStep = 0;
+	reduceLast = false;
+	localBatch = true;
+
+	// General Elaboration Information
+	finishedLocalElaboration = false;
+	finishedPartialCK = false;
+	checkChangeKeyReceived = false;
+	finishNoticeSent = false;
+
+	schedule.clear();
+	parameters.clear();
+
+	// Partial Results
+	tmpReduce = 0;
+	tmpResult.clear();
+
+	// Event Message holders
+	cancelAndDelete(pingResEvent);
+	cancelAndDelete(nextStepMsg);
+
+	// Ping reply holder
+	delete replyPingMsg;
 }
 
 void Worker::sendData(int newKey, int value, int scheduleStep){
