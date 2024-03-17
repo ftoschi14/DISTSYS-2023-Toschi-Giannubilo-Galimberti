@@ -65,6 +65,7 @@ private:
 	float failureProbability;
 	float changeKeyProbability;
 	bool failed;
+	float insertTimeout;
 
 	// Current Batch Elaboration information
 	int currentScheduleStep;
@@ -92,6 +93,7 @@ private:
 	PingMessage *replyPingMsg;
 protected:
 	virtual void initialize() override;
+	virtual void finish() override;
 
 	// Message handling
 	virtual void handleMessage(cMessage *msg) override;
@@ -147,8 +149,35 @@ void Worker::initialize(){
 	numWorkers = par("numWorkers").intValue();
 
 	changeKeyProbability = 0.35;
+	insertTimeout = 0.5; //500 ms
 	localBatch = true;
 	failed = false;
+}
+
+void Worker::finish(){
+		//data.clear();
+		for(auto &pair : unstableMessages) {
+	        DataInsertMessage* msg = pair.second; // Extract the pointer to the message
+	        delete msg; // Delete the message
+	    }
+	    unstableMessages.clear();
+
+	    for(auto &pair : timeouts) {
+	        cMessage* msg = pair.second; // Extract the pointer to the message
+	        delete msg; // Delete the message
+	    }
+		timeouts.clear();
+
+		// Data loader instances
+		delete loader;
+		delete insertManager;
+
+		// Event Message holders
+		//delete pingResEvent;
+		//delete nextStepMsg;
+
+		// Ping reply holder
+		delete replyPingMsg;
 }
 
 void Worker::handleMessage(cMessage *msg){
@@ -191,7 +220,7 @@ void Worker::handleMessage(cMessage *msg){
 				// Reschedule the timeout for this message
                 cMessage* newTimeoutMsg = new cMessage(("Timeout-" + std::to_string(reqID)).c_str());
                 newTimeoutMsg->setContextPointer(new int(reqID));
-                scheduleAt(simTime() + timeout, newTimeoutMsg);
+                scheduleAt(simTime() + insertTimeout, newTimeoutMsg);
 
                 // Update maps with the new timeout message and remove the old one
                 timeouts[reqID] = newTimeoutMsg;
@@ -276,7 +305,7 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 	}
 
 	int dataSize = msg->getDataArraySize();
-	iterations = (dataSize / batchSize) +1;
+
 	//Persisting data on file
 	folder = "Data/Worker_" + std::to_string(workerId) + "/";
 	std::ofstream data_file;
@@ -323,9 +352,11 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 			timeouts.erase(reqID);
 		}
 
-		auto insertMsg = unstableMessages.find(reqID);
-		if(insertMsg != unstableMessages.end()){
+		auto insertMsgPair = unstableMessages.find(reqID);
+		if(insertMsgPair != unstableMessages.end()){
 			EV << "Received ACK, deleting unstable message";
+			DataInsertMessage *dupMsg = dynamic_cast<DataInsertMessage *>(insertMsgPair->second);
+			delete dupMsg;
 			unstableMessages.erase(reqID);
 		}
 	} else {
@@ -705,7 +736,7 @@ void Worker::sendData(int newKey, int value, int scheduleStep){
 	cMessage* timeoutMsg = new cMessage(("Timeout-" + std::to_string(changeKeyCtr)).c_str());
 	timeoutMsg->setContextPointer(new int(changeKeyCtr));
 
-	scheduleAt(simTime()+timeout, timeoutMsg);
+	scheduleAt(simTime() + insertTimeout, timeoutMsg);
 
 	timeouts[changeKeyCtr] = timeoutMsg;
 	changeKeyCtr++;
