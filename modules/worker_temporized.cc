@@ -19,23 +19,23 @@
 
 #define LEADER_PORT 0
 
-#define MAP_EXEC_TIME_AVG 0.01
-#define MAP_EXEC_TIME_STD 0.03
+#define MAP_EXEC_TIME_AVG 0.0001
+#define MAP_EXEC_TIME_STD 0.0003
 
-#define FILTER_EXEC_TIME_AVG 0.01
-#define FILTER_EXEC_TIME_STD 0.03
+#define FILTER_EXEC_TIME_AVG 0.0001
+#define FILTER_EXEC_TIME_STD 0.0003
 
-#define REDUCE_EXEC_TIME_AVG 2
-#define REDUCE_EXEC_TIME_STD 1
+#define REDUCE_EXEC_TIME_AVG 0.02
+#define REDUCE_EXEC_TIME_STD 0.01
 
-#define CHANGEKEY_EXEC_TIME_AVG 0.05
-#define CHANGEKEY_EXEC_TIME_STD 0.05
+#define CHANGEKEY_EXEC_TIME_AVG 0.0005
+#define CHANGEKEY_EXEC_TIME_STD 0.0005
 
-#define FINISH_EXEC_DELAY 2
+#define FINISH_EXEC_DELAY 0.2
 #define PING_DELAY_AVG 0
-#define PING_DELAY_VAR 1
-#define RESTART_DELAY_AVG 5
-#define RESTART_DELAY_VAR 2
+#define PING_DELAY_VAR 0.1
+#define RESTART_DELAY_AVG 0.5
+#define RESTART_DELAY_VAR 0.02
 
 using namespace omnetpp;
 
@@ -60,7 +60,6 @@ private:
 
 	int currentScheduleStep;
 	int currentDataIndex;
-	int tmpReduce;
 	int iterations;
 	int currentBatch;
 	int batchSize;
@@ -71,6 +70,11 @@ private:
 	bool finishedLocalElaboration;
 	bool finishedPartialCK;
 	bool checkChangeKeyReceived;
+
+	bool finishNoticeSent;
+
+	int tmpReduce;
+	std::vector<int> tmpResult;
 
     std::vector<int> parameters;
 	std::vector<std::string> schedule;
@@ -130,7 +134,7 @@ void Worker::initialize(){
 	localFinish = false;
 	timeout=5;
 	changeKeyCtr = 0;
-	changeKeyProbability = 0.1;
+	changeKeyProbability = 0.75;
 	currentBatch = 0;
 	localBatch = true;
 }
@@ -294,6 +298,8 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
     }
     reduceLast = (schedule.back() == "reduce");
 
+    loadNextBatch(); // Load first batch
+
 	nextStepMsg = new cMessage("NextStep");
 	scheduleAt(simTime(), nextStepMsg);
 	delete msg;
@@ -347,6 +353,7 @@ void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *
 	scheduleAt(simTime() + FINISH_EXEC_DELAY , nextStepMsg);
 
 	checkChangeKeyReceived = true;
+	finishedPartialCK = false;
 	delete msg;
 }
 
@@ -401,6 +408,8 @@ std::vector<int> Worker::getRemainingParameters(int scheduleStep){
 }
 
 void Worker::processStep(){
+	if(failed) return;
+
 	if(failureDetection()){
 		failed = true;
 		EV<<"FAILURE DETECTED AT WORKER: "<<workerId<<", deallocating memory\n";
@@ -413,24 +422,26 @@ void Worker::processStep(){
 			persistingReduce(tmpReduce);
 			tmpReduce = 0;
 		} else {
-			persistingResult({data[schedule.size() - 1].begin(), data[schedule.size() - 1].end()});
-			data.erase(schedule.size() - 1);
+			persistingResult(tmpResult);
+			tmpResult.clear();
 		}
 		loadNextBatch();
-
-		if(finishedLocalElaboration && !finishedPartialCK && !checkChangeKeyReceived) {
-			EV<<"\nSENDING FINISHED SIMULATION WORKER: "<<workerId<<"\n\n";
-			FinishSimMessage* finishSimMsg = new FinishSimMessage();
-			finishSimMsg->setWorkerId(workerId);
-			send(finishSimMsg, "out", 0);
+		EV<<"Status - Worker " << workerId << " - FinishedLocal: " << finishedLocalElaboration << " - FinishedCK: " << finishedPartialCK << " - CheckCKReceived: " << checkChangeKeyReceived << std::endl;
+		
+		if(finishedLocalElaboration && finishedPartialCK && !finishNoticeSent) {
+			EV<<"\nSENDING FINISHED LOCAL ELABORATION WORKER: "<<workerId<<"\n\n";
+			FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
+			finishLocalMsg->setWorkerId(workerId);
+			send(finishLocalMsg, "out", 0);	
+			finishNoticeSent = true;
 		}
 
-		if(finishedLocalElaboration && finishedPartialCK && !checkChangeKeyReceived) {
+		if(finishNoticeSent && finishedPartialCK && !checkChangeKeyReceived) {
 			EV<<"\nTemporarily finished elaborating ChangeKeys - Status: Idle\n\n";
 			return;
 		}
 
-		if(finishedLocalElaboration && finishedPartialCK && checkChangeKeyReceived) {
+		if(finishNoticeSent && finishedPartialCK && checkChangeKeyReceived) {
 			CheckChangeKeyAckMessage* checkChangeKeyAckMsg = new CheckChangeKeyAckMessage();
 			checkChangeKeyAckMsg->setWorkerId(workerId);
 			send(checkChangeKeyAckMsg, "out", 0);
@@ -442,8 +453,11 @@ void Worker::processStep(){
 	if(!data[currentScheduleStep].empty()){
 		int value = data[currentScheduleStep].front();
 		data[currentScheduleStep].pop_front();
+		EV << "Worker " << workerId << " - Elaborating: " << value << " - Operation: " << schedule[currentScheduleStep] << std::endl;
 
 		bool result = applyOperation(value);
+
+		EV << "Result: " << value << std::endl;
 
 		/*
 		* 2 Cases in which we add data:
@@ -454,7 +468,7 @@ void Worker::processStep(){
 			if(currentScheduleStep + 1 < schedule.size()){
 				data[currentScheduleStep + 1].push_back(value);
 			} else if(!reduceLast){
-				data[currentScheduleStep].push_back(value);
+				tmpResult.push_back(value);
 			}
 		}
 
@@ -463,8 +477,10 @@ void Worker::processStep(){
 		nextStepMsg = new cMessage("NextStep");
 		scheduleAt(simTime()+delay, nextStepMsg);
 	} else {
+		EV << "Empty map, finished current step\n\n";
 		currentScheduleStep++;
 		if(reduceLast && currentScheduleStep == schedule.size() - 1) {
+			EV << "Entering reduce\n\n";
 			processReduce();
 			return;
 		}
@@ -473,7 +489,10 @@ void Worker::processStep(){
 }
 
 void Worker::processReduce(){
-	tmpReduce = reduce({data[currentScheduleStep].begin(), data[currentScheduleStep].end()});
+	tmpReduce += reduce({data[currentScheduleStep].begin(), data[currentScheduleStep].end()});
+	EV << "Current value: " << tmpReduce << std::endl;
+
+	currentScheduleStep++;
 
 	float delay = calculateDelay(schedule[currentScheduleStep]);
 
@@ -483,22 +502,25 @@ void Worker::processReduce(){
 
 void Worker::loadNextBatch(){
 	if(localBatch) {
+		EV << "Loading local..." << std::endl;
 		std::vector<int> batch = loader->loadBatch();
 		if(batch.empty()){
 			finishedLocalElaboration = true;
 			localBatch = false;
 			loadNextBatch();
-			std::cout << "Finished local, switching to ck";
+			std::cout << "Finished local, switching to ck" << std::endl;
 			return;
 		}
         data[0].insert(data[0].end(), batch.begin(), batch.end());
 	} else if(!finishedPartialCK) {
+		EV << "Loading CK..." << std::endl;
 		std::map<int, std::vector<int>> ckBatch = insertManager->getBatch();
 
 		if(ckBatch.empty()){
 			finishedPartialCK = true;
-			std::cout << "CK data empty";
+			EV << "CK data empty" << std::endl;
 		} else {
+			EV << "\n\nCK not empty";
 			for(int i=0; i < schedule.size(); i++) {
 				data[i].insert(data[i].end(), ckBatch[i].begin(), ckBatch[i].end());
 			}
@@ -513,7 +535,9 @@ bool Worker::applyOperation(int& value){
 	const int& parameter = parameters[currentScheduleStep];
 
 	if(operation == "add" || operation == "sub" || operation == "mul" || operation == "div") {
-		value += map(operation, parameter, value);
+		int res = map(operation, parameter, value);
+		EV << "Map result: " << res << std::endl;
+		value = res;
 
 		return true;
 	} else if(operation == "lt" || operation == "gt" || operation == "le" || operation == "ge") {
