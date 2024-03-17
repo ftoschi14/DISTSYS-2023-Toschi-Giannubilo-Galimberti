@@ -55,7 +55,7 @@ public:
 
 		if (!file) {
 		    std::cerr << "Failed to seek to position: " << filePosition << std::endl;
-		    file.clear(); // Attempt to clear the error state
+		    return {};
 		}
 
 		std::vector<int> batchValues;
