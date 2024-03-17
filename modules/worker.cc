@@ -53,7 +53,6 @@ private:
 	cMessage *localExEvent;
 	cMessage *changeKeyExEvent;
 	cMessage *pingResEvent;
-
 	PingMessage *replyPingMsg;
 protected:
 	virtual void initialize() override;
@@ -150,6 +149,19 @@ void Worker::handleMessage(cMessage *msg){
 		return;
 	}
 
+	RestartMessage *restartMsg = dynamic_cast<RestartMessage *>(msg);
+    if(restartMsg != nullptr) {
+    	// Successfully cast to RestartMessage, handle it
+    	handleRestartMessage(restartMsg);
+    	return;
+    }
+
+	if(msg == pingResEvent){
+    	EV<<"\nPingResEvent at worker: "<<workerId<<"\n\n";
+    	handlePingMessage(msg);
+    	return;
+    }
+
 	SetupMessage *setupMsg = dynamic_cast<SetupMessage *>(msg);
     if(setupMsg != nullptr){
         // Successfully cast to SetupMessage, handle it
@@ -164,11 +176,6 @@ void Worker::handleMessage(cMessage *msg){
         return;
     }
 
-    if(msg == pingResEvent){
-    	EV<<"\nPingResEvent at worker: "<<workerId<<"\n\n";
-    	handlePingMessage(msg);
-    	return;
-    }
 	if(msg == localExEvent){
 		EV<<"\nLocalExEvent at worker: "<<workerId<<"\n\n";
 		handleLocalExEvent(msg);
@@ -200,19 +207,30 @@ void Worker::handleMessage(cMessage *msg){
 		handleFinishSimMessage(finishSimMsg);
 		return;
 	}
-
-	RestartMessage *restartMsg = dynamic_cast<RestartMessage *>(msg);
-    if(restartMsg != nullptr) {
-    	// Successfully cast to RestartMessage, handle it
-    	handleRestartMessage(restartMsg);
-    	return;
-    }
 }
 
 void Worker::handlePingMessage(cMessage *msg){
 	EV<<"\nReceived ping message at worker: "<<workerId<<"\n\n";
 	
 	send(replyPingMsg, "out", LEADER_PORT);
+	
+	delete msg;
+	return;
+}
+
+void Worker::handleRestartMessage(RestartMessage *msg){
+	if(!failed){
+		EV << "Worker " << workerId << " received a RestartMessage, but has not failed: Restarting..." << std::endl;
+		deallocatingMemory();
+	}
+	failed = false;
+	workerId = msg->getWorkerID();
+	initializeDataModules();
+	// Re-Initialized worker and data modules, now wait for schedule and re-start processing
+	localExEvent = new cMessage("LocalExEvent");
+	float delay = lognormal(RESTART_DELAY_AVG, RESTART_DELAY_VAR);
+
+	scheduleAt(simTime() + delay, localExEvent);
 	
 	delete msg;
 	return;
@@ -324,7 +342,7 @@ void Worker::handleChangeKeyExEvent(cMessage *msg){
 	std::vector<int> remainingParameters;
 
 	changeKeyData = insertManager->getBatch();
-	
+
 	if(!changeKeyData.empty()){
 		for(auto& pair : changeKeyData){
 			EV<<"Change key batch: \n";
@@ -347,10 +365,10 @@ void Worker::handleChangeKeyExEvent(cMessage *msg){
 		scheduleAt(simTime() + BATCH_EXEC_TIME , changeKeyExEvent);
 	}else{
 		if(localFinish){
-			EV<<"\nSENDING FINISHED SIMULATION WORKER: "<<workerId<<"\n\n";
-			FinishSimMessage* finishSimMsg = new FinishSimMessage();
-			finishSimMsg->setWorkerId(workerId);
-			send(finishSimMsg, "out", 0);
+			CheckChangeKeyAckMessage* checkChangeKeyAckMsg = new CheckChangeKeyAckMessage();
+			checkChangeKeyAckMsg->setWorkerId(workerId);
+			send(checkChangeKeyAckMsg, "out", 0);
+			EV<<"\nChangeKey checked at worker: "<<workerId<<"\n\n";
 		}
 	}
 }
@@ -358,30 +376,8 @@ void Worker::handleChangeKeyExEvent(cMessage *msg){
 void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg){
 	changeKeyExEvent = new cMessage("ChangeKeyExEvent");
 	scheduleAt(simTime() + FINISH_EXEC_DELAY , changeKeyExEvent);
-	CheckChangeKeyAckMessage* checkChangeKeyAckMsg = new CheckChangeKeyAckMessage();
-	checkChangeKeyAckMsg->setWorkerId(workerId);
-	send(checkChangeKeyAckMsg, "out", 0);
-	EV<<"\nChangeKey checked at worker: "<<workerId<<"\n\n";
 
 	delete msg;
-}
-
-void Worker::handleRestartMessage(RestartMessage *msg){
-	if(!failed){
-		EV << "Worker " << workerId << " received a RestartMessage, but has not failed: Restarting..." << std::endl;
-		deallocatingMemory();
-	}
-	failed = false;
-	workerId = msg->getWorkerID();
-	initializeDataModules();
-	// Re-Initialized worker and data modules, now wait for schedule and re-start processing
-	localExEvent = new cMessage("LocalExEvent");
-	float delay = lognormal(RESTART_DELAY_AVG, RESTART_DELAY_VAR);
-
-	scheduleAt(simTime() + delay, localExEvent);
-	
-	delete msg;
-	return;
 }
 
 void Worker::handleFinishSimMessage(FinishSimMessage *msg){
