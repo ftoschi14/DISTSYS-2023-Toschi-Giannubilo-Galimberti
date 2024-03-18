@@ -15,6 +15,9 @@
 #include "finishSim_m.h"
 #include "BatchLoader.h"
 #include "InsertManager.h"
+#include "changeKeySelf_m.h"
+#include "localExEvent_m.h"
+#include "pingResEvent_m.h"
 
 #define LEADER_PORT 0
 #define BATCH_EXEC_TIME 2
@@ -50,9 +53,9 @@ private:
 	int numWorkers;
 	float changeKeyProbability;
 
-	cMessage *localExEvent;
-	cMessage *changeKeyExEvent;
-	cMessage *pingResEvent;
+	//cMessage *localExEvent;
+	//cMessage *changeKeyExEvent;
+	//cMessage *pingResEvent;
 	PingMessage *replyPingMsg;
 protected:
 	virtual void initialize() override;
@@ -143,7 +146,7 @@ void Worker::handleMessage(cMessage *msg){
 		replyPingMsg = pingMsg;
 		// Generate random delay
 		float delay = lognormal(PING_DELAY_AVG, PING_DELAY_VAR); // Log-normal to have always positive increments
-		pingResEvent = new cMessage("PingResEvent");
+		PingResEventMessage* pingResEvent = new PingResEventMessage();
 		// Schedule response event
         scheduleAt(simTime() + delay , pingResEvent);
 		return;
@@ -153,12 +156,6 @@ void Worker::handleMessage(cMessage *msg){
     if(restartMsg != nullptr) {
     	// Successfully cast to RestartMessage, handle it
     	handleRestartMessage(restartMsg);
-    	return;
-    }
-
-	if(msg == pingResEvent){
-    	EV<<"\nPingResEvent at worker: "<<workerId<<"\n\n";
-    	handlePingMessage(msg);
     	return;
     }
 
@@ -175,17 +172,24 @@ void Worker::handleMessage(cMessage *msg){
         handleScheduleMessage(scheduleMsg);
         return;
     }
-
-	if(msg == localExEvent){
+	LocalExEventMessage *localExEvent = dynamic_cast<LocalExEventMessage *>(msg);
+	if(localExEvent != nullptr){
 		EV<<"\nLocalExEvent at worker: "<<workerId<<"\n\n";
 		handleLocalExEvent(msg);
 		return;
 	}
-	if(msg == changeKeyExEvent){
+	ChangeKeySelfMessage *changeKeySelf = dynamic_cast<ChangeKeySelfMessage *>(msg);
+	if(changeKeySelf != nullptr){
 		EV<<"\nChangeKeyExEvent at worker: "<<workerId<<"\n\n";
 		handleChangeKeyExEvent(msg);
 		return;
 	}
+	PingResEventMessage *pingResEvent = dynamic_cast<PingResEventMessage *>(msg);
+	if(pingResEvent != nullptr){
+    	EV<<"\nPingResEvent at worker: "<<workerId<<"\n\n";
+    	handlePingMessage(msg);
+    	return;
+    }
     // DataInsertMessage (Could be either to insert here, or an ACK)
     DataInsertMessage *dataInsertMsg = dynamic_cast<DataInsertMessage *>(msg);
     if(dataInsertMsg != nullptr){
@@ -227,9 +231,9 @@ void Worker::handleRestartMessage(RestartMessage *msg){
 	workerId = msg->getWorkerID();
 	initializeDataModules();
 	// Re-Initialized worker and data modules, now wait for schedule and re-start processing
-	localExEvent = new cMessage("LocalExEvent");
+	
 	float delay = lognormal(RESTART_DELAY_AVG, RESTART_DELAY_VAR);
-
+	LocalExEventMessage *localExEvent = new LocalExEventMessage();
 	scheduleAt(simTime() + delay, localExEvent);
 	
 	delete msg;
@@ -272,7 +276,7 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
         schedule.push_back(msg->getSchedule(i)) ;
 		parameters.push_back(msg->getParameters(i));
     }
-	localExEvent = new cMessage("LocalExEvent");
+    LocalExEventMessage *localExEvent = new LocalExEventMessage();
 	scheduleAt(simTime(), localExEvent);
 	delete msg;
 }
@@ -286,7 +290,7 @@ void Worker::handleLocalExEvent(cMessage *msg){
 		if(failed){
 			return;
 		}
-		localExEvent = new cMessage("LocalExEvent");
+		LocalExEventMessage *localExEvent = new LocalExEventMessage();
         scheduleAt(simTime() + BATCH_EXEC_TIME , localExEvent);
 		currentBatch++;
     }else{
@@ -329,8 +333,8 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 
 		send(insertMsg, "out", gateIndex);
 	}
-	changeKeyExEvent = new cMessage("ChangeKeyExEvent");
-	scheduleAt(simTime(), changeKeyExEvent);
+	ChangeKeySelfMessage* changeKeySelf = new ChangeKeySelfMessage();
+	scheduleAt(simTime(), changeKeySelf);
 	delete msg;
 }
 
@@ -361,8 +365,8 @@ void Worker::handleChangeKeyExEvent(cMessage *msg){
 				return;
 			}
 		}
-		changeKeyExEvent = new cMessage("ChangeKeyExEvent");
-		scheduleAt(simTime() + BATCH_EXEC_TIME , changeKeyExEvent);
+		ChangeKeySelfMessage* changeKeySelf = new ChangeKeySelfMessage();
+		scheduleAt(simTime() + BATCH_EXEC_TIME , changeKeySelf);
 	}else{
 		if(localFinish){
 			CheckChangeKeyAckMessage* checkChangeKeyAckMsg = new CheckChangeKeyAckMessage();
@@ -374,8 +378,8 @@ void Worker::handleChangeKeyExEvent(cMessage *msg){
 }
 
 void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg){
-	changeKeyExEvent = new cMessage("ChangeKeyExEvent");
-	scheduleAt(simTime() + FINISH_EXEC_DELAY , changeKeyExEvent);
+	ChangeKeySelfMessage* changeKeySelf = new ChangeKeySelfMessage();
+	scheduleAt(simTime() + FINISH_EXEC_DELAY , changeKeySelf);
 
 	delete msg;
 }
