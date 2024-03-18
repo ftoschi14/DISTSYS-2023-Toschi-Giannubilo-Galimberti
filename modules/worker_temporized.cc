@@ -389,13 +389,28 @@ void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *
 
 void Worker::handleRestartMessage(RestartMessage *msg){
 	if(!failed){
-		EV << "Worker " << workerId << " received a RestartMessage, but has not failed: Restarting..." << std::endl;
+		std::cout << "Worker " << workerId << " received a RestartMessage, but has not failed: Restarting..." << std::endl;
 		deallocatingMemory();
 	}
 	failed = false;
 	workerId = msg->getWorkerID();
+	batchSize = par("batchSize").intValue();
+	numWorkers = par("numWorkers").intValue();
+
 	initializeDataModules();
-	// Re-Initialized worker and data modules, now wait for schedule and re-start processing
+	
+	// Re-Initialized worker and data modules, now copy schedule and re-start processing
+
+	int scheduleSize = msg->getScheduleArraySize();
+
+    for(int i=0; i<scheduleSize; i++){
+        schedule.push_back(msg->getSchedule(i)) ;
+		parameters.push_back(msg->getParameters(i));
+    }
+    reduceLast = (schedule.back() == "reduce");
+
+    // Load previous partial result
+
 	if(reduceLast) loadPartialReduce();
 
 	nextStepMsg = new cMessage("NextStep");
@@ -410,6 +425,8 @@ void Worker::handleFinishSimMessage(FinishSimMessage *msg){
 }
 
 void Worker::initializeDataModules() {
+	fileName = folder + "data.csv";
+
 	// Instantiate a BatchLoader
 	fileProgressName = folder + "progress.txt";
 	loader = new BatchLoader(fileName, fileProgressName, batchSize);
@@ -666,6 +683,7 @@ void Worker::deallocatingMemory(){
 		cancelAndDelete(pair.second);
 	}
 	unstableMessages.clear();
+	
 	for(auto& pair : timeouts){
 		cancelAndDelete(pair.second);
 	}
@@ -703,11 +721,9 @@ void Worker::deallocatingMemory(){
 	tmpResult.clear();
 
 	// Event Message holders
-	cancelAndDelete(pingResEvent);
 	cancelAndDelete(nextStepMsg);
-
-	// Ping reply holder
-	delete replyPingMsg;
+	//cancelAndDelete(pingResEvent);
+	//std::cout << "DEL7";
 }
 
 void Worker::sendData(int newKey, int value, int scheduleStep){

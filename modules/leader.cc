@@ -4,12 +4,13 @@
 #include <filesystem>
 #include <cstdlib>
 #include <ctime>
+
 #include "setup_m.h"
 #include "schedule_m.h"
 #include "finishLocalElaboration_m.h"
 #include "checkChangeKeyAck_m.h"
-#include "restart_m.h"
 #include "ping_m.h"
+#include "restart_m.h"
 #include "finishSim_m.h"
 
 namespace fs = std::filesystem;
@@ -21,13 +22,21 @@ class Leader : public cSimpleModule
         bool finished;
         int numWorkers;
         int scheduleSize;
+        simtime_t interval;
+        simtime_t timeout;
         std::vector<std::string> schedule;
         std::vector<int> parameters;
         std::vector<int> finishedWorkers;
+        std::vector<int> pingWorkers;
+        cMessage *ping_msg;
+        cMessage *check_msg;
     protected:
         virtual void initialize() override;
         virtual void handleMessage(cMessage *msg) override;
         void handleFinishElaborationMessage(cMessage *msg, bool local, int id);
+        void handlePingMessage(cMessage *msg, int id);
+        void checkPing();
+        void sendPing();
         void createWorkersDirectory();
         void removeWorkersDirectory();
         void sendData(int id_dest);
@@ -56,8 +65,20 @@ void Leader::initialize()
         // Call the function for sending the data
 	    sendData(i);
 	}
+
     // Call the function for sending the schedule
 	sendSchedule();
+
+	finishedWorkers.resize(numWorkers);
+	pingWorkers.resize(numWorkers);
+
+	interval = 0.2;
+	ping_msg = new cMessage("sendPing");
+	scheduleAt(simTime() + interval, ping_msg);
+
+	timeout = 3;
+	check_msg = new cMessage("checkPing");
+	scheduleAt(simTime() + interval + timeout, check_msg);
 }
 
 void Leader::handleMessage(cMessage *msg)
@@ -68,21 +89,44 @@ void Leader::handleMessage(cMessage *msg)
         handleFinishElaborationMessage(finishLocalMsg, true, finishLocalMsg -> getWorkerId());
         return;
     }
+
     CheckChangeKeyAckMessage *checkChangeKeyAckMsg = dynamic_cast<CheckChangeKeyAckMessage *>(msg);
     if(checkChangeKeyAckMsg != nullptr)
     {
         handleFinishElaborationMessage(finishLocalMsg, false, checkChangeKeyAckMsg -> getWorkerId());
         return;
     }
+
+    // Self message to send ping to all worker nodes
+    if(msg == ping_msg)
+    {
+        sendPing();
+        return;
+    }
+
+    // Self message to check who did not send a ping to the leader node
+    if(msg == check_msg)
+    {
+        checkPing();
+        return;
+    }
+
+    // Received a ping message from worker node
+    PingMessage *pingMsg = dynamic_cast<PingMessage *>(msg);
+    if(pingMsg != nullptr)
+    {
+        handlePingMessage(pingMsg, pingMsg -> getWorkerId());
+        return;
+    }
+
 }
 
 void Leader::handleFinishElaborationMessage(cMessage *msg, bool local, int id)
 {   
-
     finishedWorkers[id] = 1;
-
     delete msg;
     finished = true;
+
     for(int i = 0; i < numWorkers; i++)
     {
         if(finishedWorkers[i] == 0)
@@ -93,14 +137,18 @@ void Leader::handleFinishElaborationMessage(cMessage *msg, bool local, int id)
     }
     if(finished)
     {
-        if(local){
+        if(local)
+        {
             EV<<"\nEVERYONE FINISHED ITS LOCAL ELABORATION\n";
-        }else{
-            EV << "Application terminated at Leader side\n";
         }
+            else
+            {
+                EV << "Application terminated at Leader side\n";
+            }
         for(int i = 0; i < numWorkers; i++)
         {
-            if(local){
+            if(local)
+            {
                 FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
                 finishLocalMsg -> setWorkerId(i);
                 
@@ -109,13 +157,51 @@ void Leader::handleFinishElaborationMessage(cMessage *msg, bool local, int id)
                 {
                     finishedWorkers[i] = 0;
                 }
-            }else{
-                FinishSimMessage* finishSimMsg = new FinishSimMessage();
-                finishSimMsg -> setWorkerId(i);
-                
-                send(finishSimMsg, "out", i);
             }
+                else
+                {
+                    FinishSimMessage* finishSimMsg = new FinishSimMessage();
+                    finishSimMsg -> setWorkerId(i);
+                    send(finishSimMsg, "out", i);
+                }
         }
+    }
+}
+
+void Leader::handlePingMessage(cMessage *msg, int id)
+{
+    EV << "Ping received from worker: " << id << std::endl;
+    pingWorkers[id] = 1;
+}
+
+void Leader::checkPing()
+{
+    for(int i = 0; i < numWorkers; i++)
+    {
+        if(pingWorkers[i] == 0)
+        {
+            EV << "Worker "<< i << " is dead. Sending Restart message" << std::endl;
+            RestartMessage* resetMsg = new RestartMessage();
+            resetMsg -> setWorkerID(i);
+            send(resetMsg, "out", i);
+        }
+        pingWorkers[i] = 0;
+    }
+
+    ping_msg = new cMessage("sendPing");
+    scheduleAt(simTime() + interval, ping_msg);
+
+    check_msg = new cMessage("checkPing");
+    scheduleAt(simTime() + interval + timeout, check_msg);
+}
+
+void Leader::sendPing()
+{
+    for(int i = 0; i < numWorkers; i++)
+    {
+        PingMessage *pingMsg = new PingMessage();
+        pingMsg -> setWorkerId(i);
+        send(pingMsg, "out", i);
     }
 }
 
@@ -177,6 +263,7 @@ void Leader::sendSchedule()
     int lowerBound = 0;
     int upperBound = 100;
     int maxFilter = 0;
+
     // Define the possible operations set
     std::vector<std::string> operations = {"add", "sub", "mul", "div", "gt", "lt", "ge", "le", "changekey", "reduce"};
     int op_size = operations.size();
@@ -222,22 +309,29 @@ void Leader::sendSchedule()
             // Generate a random number between 1 e numWorkers for the changeKey operation
             int param = 0;
             parameters[i] = param;
-        }else{
+        }
+        else
+        {
             // Generate a random number between 1 and 10 avoiding negative numbers due to the division operation
-            if(operations[randomIndex] == "le" || operations[randomIndex] == "lt"){
+            if(operations[randomIndex] == "le" || operations[randomIndex] == "lt")
+            {
                 lowerBound = 60;
                 upperBound = 100;
                 int param = lowerBound + rand() % (upperBound - lowerBound + 1);
                 parameters[i] = param;
-            }else if(operations[randomIndex] == "ge" || operations[randomIndex] == "gt"){
-                lowerBound = 0;
-                upperBound = 40;
-                int param = lowerBound + rand() % (upperBound - lowerBound + 1);
-                parameters[i] = param;
-            }else{
-                int param = (rand() % 10) + 1;
-                parameters[i] = param;
             }
+                else if(operations[randomIndex] == "ge" || operations[randomIndex] == "gt")
+                {
+                    lowerBound = 0;
+                    upperBound = 40;
+                    int param = lowerBound + rand() % (upperBound - lowerBound + 1);
+                    parameters[i] = param;
+                }
+                    else
+                    {
+                        int param = (rand() % 10) + 1;
+                        parameters[i] = param;
+                    }
             
         }
         schedule[i] = operations[randomIndex];
@@ -275,7 +369,8 @@ void Leader::sendSchedule()
     }
 }
 
-int Leader::numberOfFilters(int scheduleSize){
+int Leader::numberOfFilters(int scheduleSize)
+{
     if (scheduleSize <= 10)
         return 2;
     else if (scheduleSize <= 15)
@@ -285,5 +380,3 @@ int Leader::numberOfFilters(int scheduleSize){
     else
         return 5;
 }
-
-
