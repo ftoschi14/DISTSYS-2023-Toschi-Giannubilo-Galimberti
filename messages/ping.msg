@@ -1,4 +1,4 @@
 message PingMessage 
 {
-	int sequenceNumber;	
+	int workerId;	
 }
