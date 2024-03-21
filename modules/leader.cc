@@ -4,6 +4,8 @@
 #include <filesystem>
 #include <cstdlib>
 #include <ctime>
+#include <algorithm>
+#include <numeric> // For std::accumulate
 
 #include "setup_m.h"
 #include "schedule_m.h"
@@ -30,8 +32,12 @@ class Leader : public cSimpleModule
         std::vector<int> pingWorkers;
         cMessage *ping_msg;
         cMessage *check_msg;
+
+        std::vector<int> data;
+        std::vector<int> data_clone;
     protected:
         virtual void initialize() override;
+        virtual void finish() override;
         virtual void handleMessage(cMessage *msg) override;
         void handleFinishElaborationMessage(cMessage *msg, bool local, int id);
         void handlePingMessage(cMessage *msg, int id);
@@ -41,7 +47,11 @@ class Leader : public cSimpleModule
         void removeWorkersDirectory();
         void sendData(int id_dest);
         void sendSchedule();
+        void sendCustomSchedule();
         int numberOfFilters(int scheduleSize);
+        void calcResult();
+        void printingVector(std::vector<int> vector);
+        void printingStringVector(std::vector<std::string> vector);
 };
 
 Define_Module(Leader);
@@ -66,19 +76,120 @@ void Leader::initialize()
 	    sendData(i);
 	}
 
+    data_clone = data;
+
     // Call the function for sending the schedule
 	sendSchedule();
 
 	finishedWorkers.resize(numWorkers);
 	pingWorkers.resize(numWorkers);
 
-	interval = 0.2;
+	interval = 2.5;
 	ping_msg = new cMessage("sendPing");
 	scheduleAt(simTime() + interval, ping_msg);
 
-	timeout = 3;
+	timeout = 1.3;
 	check_msg = new cMessage("checkPing");
 	scheduleAt(simTime() + interval + timeout, check_msg);
+}
+
+void Leader::finish() {
+    calcResult();
+    std::cout << "Result should be: " << std::endl;
+    if(data.size() == 1) {
+        std::cout << data[0] << std::endl;
+    } else {
+        printingVector(data);
+    }
+    std::cout << "For testing: " << std::endl;
+    std::cout << "Data: {";
+    printingVector(data_clone);
+    std::cout << "};" << std::endl;
+    std::cout << "parameters: {";
+    printingVector(parameters);
+    std::cout << "};" << std::endl;
+    std::cout << "Schedule: {";
+    printingStringVector(schedule);
+    std::cout << "};" << std::endl;
+
+    if(ping_msg->isScheduled()){
+        cancelEvent(ping_msg);
+    }
+    delete ping_msg;
+
+    if(check_msg->isScheduled()){
+        cancelEvent(check_msg);
+    }
+    delete check_msg;
+}
+
+void Leader::calcResult() {
+    for (size_t i = 0; i < schedule.size(); ++i) {
+        const auto& op = schedule[i];
+        
+        if (op == "add") {
+            std::transform(data.begin(), data.end(), data.begin(),
+                           [param = parameters[i]](int x) { return x + param; });
+        } else if (op == "sub") {
+            std::transform(data.begin(), data.end(), data.begin(),
+                           [param = parameters[i]](int x) { return x - param; });
+        } else if (op == "mul") {
+            std::transform(data.begin(), data.end(), data.begin(),
+                           [param = parameters[i]](int x) { return x * param; });
+        } else if (op == "div") {
+            std::transform(data.begin(), data.end(), data.begin(),
+                           [param = parameters[i]](int x) { return x / param; });
+        } else if (op == "gt") {
+            data.erase(std::remove_if(data.begin(), data.end(),
+                                      [param = parameters[i]](int x) { return x <= param; }),
+                       data.end());
+        } else if (op == "lt") {
+            data.erase(std::remove_if(data.begin(), data.end(),
+                                      [param = parameters[i]](int x) { return x >= param; }),
+                       data.end());
+        } else if (op == "ge") {
+            data.erase(std::remove_if(data.begin(), data.end(),
+                                      [param = parameters[i]](int x) { return x < param; }),
+                       data.end());
+        } else if (op == "le") {
+            data.erase(std::remove_if(data.begin(), data.end(),
+                                      [param = parameters[i]](int x) { return x > param; }),
+                       data.end());
+        } else if (op == "reduce") {
+            // Assuming 'reduce' means sum all elements and replace the vector with a single-element vector.
+            int sum = std::accumulate(data.begin(), data.end(), 0);
+            data.clear();
+            data.push_back(sum);
+            break; // Once reduced, no further operations make sense.
+        }
+        // 'changekey' operation is ignored as per instructions.
+    }
+}
+
+void Leader::sendCustomSchedule()
+{
+    scheduleSize = 4;
+    schedule = {"add","gt","changekey", "reduce"};
+    parameters = {1,10,0,0};
+    bool reduceFound = true;
+    for(int i = 0; i < numWorkers; i++)
+    {
+        std::cout << "Schedule: ";
+        ScheduleMessage *msg = new ScheduleMessage();
+        msg -> setDestWorker(i);
+        msg -> setScheduleArraySize(scheduleSize);
+        msg -> setParametersArraySize(scheduleSize);
+
+        for(int j = 0; j < scheduleSize; j++)
+        {
+            msg -> setSchedule(j, schedule[j].c_str());
+            msg -> setParameters(j, parameters[j]);
+            std::cout << schedule[j] << " ";
+            std::cout << parameters[j] << " ";
+        }
+        send(msg, "out", i);
+        std::cout << endl;
+    }
 }
 
 void Leader::handleMessage(cMessage *msg)
@@ -93,13 +204,15 @@ void Leader::handleMessage(cMessage *msg)
     CheckChangeKeyAckMessage *checkChangeKeyAckMsg = dynamic_cast<CheckChangeKeyAckMessage *>(msg);
     if(checkChangeKeyAckMsg != nullptr)
     {
-        handleFinishElaborationMessage(finishLocalMsg, false, checkChangeKeyAckMsg -> getWorkerId());
+        handleFinishElaborationMessage(checkChangeKeyAckMsg, false, checkChangeKeyAckMsg -> getWorkerId());
         return;
     }
 
     // Self message to send ping to all worker nodes
     if(msg == ping_msg)
     {
+        if(finished) return;
+
         sendPing();
         return;
     }
@@ -107,6 +220,8 @@ void Leader::handleMessage(cMessage *msg)
     // Self message to check who did not send a ping to the leader node
     if(msg == check_msg)
     {
+        if(finished) return;
+
         checkPing();
         return;
     }
@@ -116,6 +231,7 @@ void Leader::handleMessage(cMessage *msg)
     if(pingMsg != nullptr)
     {
         handlePingMessage(pingMsg, pingMsg -> getWorkerId());
+        delete msg;
         return;
     }
 
@@ -181,17 +297,24 @@ void Leader::checkPing()
         if(pingWorkers[i] == 0)
         {
             EV << "Worker "<< i << " is dead. Sending Restart message" << std::endl;
-            RestartMessage* resetMsg = new RestartMessage();
-            resetMsg -> setWorkerID(i);
-            send(resetMsg, "out", i);
+            RestartMessage* restartMsg = new RestartMessage();
+            restartMsg -> setWorkerID(i);
+
+            restartMsg -> setScheduleArraySize(scheduleSize);
+            restartMsg -> setParametersArraySize(scheduleSize);
+
+            for(int j = 0; j < scheduleSize; j++)
+            {
+                restartMsg -> setSchedule(j, schedule[j].c_str());
+                restartMsg -> setParameters(j, parameters[j]);
+            }
+            send(restartMsg, "out", i);
         }
         pingWorkers[i] = 0;
     }
 
-    ping_msg = new cMessage("sendPing");
     scheduleAt(simTime() + interval, ping_msg);
 
-    check_msg = new cMessage("checkPing");
     scheduleAt(simTime() + interval + timeout, check_msg);
 }
 
@@ -251,6 +374,9 @@ void Leader::sendData(int idDest)
         int value = (rand() % 100) + 1;
         std::cout << value << " ";
         msg -> setData(j, value);
+
+        // Keep track of data for final check
+        data.push_back(value);
     }
     std::cout << endl << endl;
     send(msg, "out", idDest);
@@ -379,4 +505,16 @@ int Leader::numberOfFilters(int scheduleSize)
         return 4;
     else
         return 5;
+}
+
+void Leader::printingVector(std::vector<int> vector){
+    for(int i=0; i<vector.size(); i++){
+        std::cout<<vector[i]<<", ";
+    }
+}
+
+void Leader::printingStringVector(std::vector<std::string> vector){
+    for(int i=0; i<vector.size(); i++){
+        std::cout<< "\"" <<vector[i] << "\"" <<", ";
+    }
 }
