@@ -72,13 +72,10 @@ void Leader::initialize()
 	finishedWorkers.resize(numWorkers);
 	pingWorkers.resize(numWorkers);
 
+	timeout = 3;
 	interval = 0.2;
 	ping_msg = new cMessage("sendPing");
 	scheduleAt(simTime() + interval, ping_msg);
-
-	timeout = 3;
-	check_msg = new cMessage("checkPing");
-	scheduleAt(simTime() + interval + timeout, check_msg);
 }
 
 void Leader::handleMessage(cMessage *msg)
@@ -139,11 +136,11 @@ void Leader::handleFinishElaborationMessage(cMessage *msg, bool local, int id)
     {
         if(local)
         {
-            EV<<"\nEVERYONE FINISHED ITS LOCAL ELABORATION\n";
+            EV << "LEADER -> Everyone has finished its local elaboration" << std::endl;
         }
             else
             {
-                EV << "Application terminated at Leader side\n";
+                EV << "LEADER -> Application terminated at Leader side" << std::endl;
             }
         for(int i = 0; i < numWorkers; i++)
         {
@@ -170,33 +167,39 @@ void Leader::handleFinishElaborationMessage(cMessage *msg, bool local, int id)
 
 void Leader::handlePingMessage(cMessage *msg, int id)
 {
-    EV << "Ping received from worker: " << id << std::endl;
+    EV << "LEADER -> Ping received from worker " << id << std::endl;
     pingWorkers[id] = 1;
 }
 
 void Leader::checkPing()
 {
+    EV << "LEADER -> Checking ping from workers" << std::endl;
     for(int i = 0; i < numWorkers; i++)
     {
         if(pingWorkers[i] == 0)
         {
-            EV << "Worker "<< i << " is dead. Sending Restart message" << std::endl;
+            EV << "LEADER -> Worker "<< i << " is dead. Sending Restart message" << std::endl;
             RestartMessage* resetMsg = new RestartMessage();
             resetMsg -> setWorkerID(i);
             send(resetMsg, "out", i);
         }
         pingWorkers[i] = 0;
     }
+    ping_msg = new cMessage("sendPing");
+    scheduleAt(simTime() + interval, ping_msg);
 }
 
 void Leader::sendPing()
 {
+    EV << "LEADER -> Sending ping to the worker nodes" << std::endl;
     for(int i = 0; i < numWorkers; i++)
     {
         PingMessage *pingMsg = new PingMessage();
         pingMsg -> setWorkerId(i);
         send(pingMsg, "out", i);
     }
+    check_msg = new cMessage("checkPing");
+    scheduleAt(simTime() + timeout, check_msg);
 }
 
 void Leader::createWorkersDirectory()
@@ -246,7 +249,7 @@ void Leader::sendData(int idDest)
         std::cout << value << " ";
         msg -> setData(j, value);
     }
-    std::cout << endl << endl;
+    std::cout << std::endl << std::endl;
     send(msg, "out", idDest);
 }
 
@@ -261,7 +264,7 @@ void Leader::sendSchedule()
     // Define the possible operations set
     std::vector<std::string> operations = {"add", "sub", "mul", "div", "gt", "lt", "ge", "le", "changekey", "reduce"};
     int op_size = operations.size();
-    std::cout << "There are " << op_size << " operations"<< endl;
+    std::cout << "There are " << op_size << " operations"<< std::endl;
 
     for(int i = 0; i < op_size; i++)
     {
@@ -281,7 +284,7 @@ void Leader::sendSchedule()
     lowerBound = 8;
     upperBound = 20;
     scheduleSize = lowerBound + rand() % (upperBound - lowerBound + 1);
-    std::cout << std::endl << "Schedule size: " << scheduleSize << endl;
+    std::cout << std::endl << "Schedule size: " << scheduleSize << std::endl;
     maxFilter = numberOfFilters(scheduleSize);
 
     // Instantiate an empty array for the actual schedule and for parameters
@@ -359,7 +362,7 @@ void Leader::sendSchedule()
             std::cout << parameters[j] << " ";
         }
         send(msg, "out", i);
-        std::cout << endl;
+        std::cout << std::endl;
     }
 }
 

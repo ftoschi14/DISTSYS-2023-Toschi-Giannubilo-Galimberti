@@ -56,7 +56,7 @@ private:
 	//cMessage *localExEvent;
 	//cMessage *changeKeyExEvent;
 	//cMessage *pingResEvent;
-	PingMessage *replyPingMsg;
+	//PingMessage *replyPingMsg;
 protected:
 	virtual void initialize() override;
 	virtual void handleMessage(cMessage *msg) override;
@@ -142,8 +142,9 @@ void Worker::handleMessage(cMessage *msg){
 	}
 
 	PingMessage *pingMsg = dynamic_cast<PingMessage *>(msg);
-	if(pingMsg != nullptr){
-		replyPingMsg = pingMsg;
+	if(pingMsg != nullptr)
+	{
+		//replyPingMsg = pingMsg;
 		// Generate random delay
 		float delay = lognormal(PING_DELAY_AVG, PING_DELAY_VAR); // Log-normal to have always positive increments
 		PingResEventMessage* pingResEvent = new PingResEventMessage();
@@ -185,8 +186,9 @@ void Worker::handleMessage(cMessage *msg){
 		return;
 	}
 	PingResEventMessage *pingResEvent = dynamic_cast<PingResEventMessage *>(msg);
-	if(pingResEvent != nullptr){
-    	EV<<"\nPingResEvent at worker: "<<workerId<<"\n\n";
+	if(pingResEvent != nullptr)
+	{
+    	// EV<<"\nPingResEvent at worker: "<<workerId<<"\n\n";
     	handlePingMessage(msg);
     	return;
     }
@@ -207,23 +209,28 @@ void Worker::handleMessage(cMessage *msg){
 	}
 
     FinishSimMessage *finishSimMsg = dynamic_cast<FinishSimMessage *>(msg);
-	if(finishSimMsg != nullptr){
+	if(finishSimMsg != nullptr)
+	{
 		handleFinishSimMessage(finishSimMsg);
 		return;
 	}
 }
 
-void Worker::handlePingMessage(cMessage *msg){
-	EV<<"\nReceived ping message at worker: "<<workerId<<"\n\n";
-	
+void Worker::handlePingMessage(cMessage *msg)
+{
+	EV << "WORKER "<< workerId << " -> Ping message received" << std::endl;
+
+	PingMessage *replyPingMsg = new PingMessage();
+	replyPingMsg -> setWorkerId(workerId);
 	send(replyPingMsg, "out", LEADER_PORT);
-	
 	delete msg;
+
 	return;
 }
 
 void Worker::handleRestartMessage(RestartMessage *msg){
-	if(!failed){
+	if(!failed)
+	{
 		EV << "Worker " << workerId << " received a RestartMessage, but has not failed: Restarting..." << std::endl;
 		deallocatingMemory();
 	}
@@ -380,12 +387,16 @@ void Worker::handleChangeKeyExEvent(cMessage *msg){
 void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg){
 	ChangeKeySelfMessage* changeKeySelf = new ChangeKeySelfMessage();
 	scheduleAt(simTime() + FINISH_EXEC_DELAY , changeKeySelf);
-
 	delete msg;
 }
 
-void Worker::handleFinishSimMessage(FinishSimMessage *msg){
-	EV<<"\nApplication finished at worker: "<<workerId<<"\n\n";
+void Worker::handleFinishSimMessage(FinishSimMessage *msg)
+{
+	EV << "Application finished at worker: " << workerId << std::endl;
+	if(msg -> getWorkerId() == 3)
+	{
+	    endSimulation();
+	}
 	delete msg;
 }
 
