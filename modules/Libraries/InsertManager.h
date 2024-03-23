@@ -17,7 +17,7 @@ private:
     int currentBatchSize;
     int batchSize;
 
-    void saveData() {
+    void overridePersistedData() {
         std::ofstream insertFile(insertFilename);
         if (!insertFile.is_open()) {
             std::cerr << "Error opening insert file for writing." << std::endl;
@@ -30,7 +30,22 @@ private:
             }
         }
         insertFile.close();
+    }
 
+    void appendData(int step, int value) {
+        std::ofstream insertFile(insertFilename, std::ios::app);
+        if (!insertFile.is_open()) {
+            std::cerr << "Error opening insert file for writing." << std::endl;
+            return;
+        }
+
+        // Append the new key-value pair.
+        insertFile << step << ',' << value << std::endl;
+
+        insertFile.close();
+    }
+
+    void updateReqFile() {
         std::ofstream reqFile(requestFilename);
         if (!reqFile.is_open()) {
             std::cerr << "Error opening request file for writing." << std::endl;
@@ -115,10 +130,6 @@ public:
     }
 
     std::map<int, std::vector<int>> getBatch() {
-    	if(currentBatchSize > 0) {
-    		saveData(); // Assuming result was persisted, we can get rid of temporary data
-    	}
-
         std::map<int, std::vector<int>> batch;
         currentBatchSize = 0;
 
@@ -147,7 +158,7 @@ public:
                 it++; // Move to the next scheduleStep if there are remaining values
             }
         }
-    return batch;
+        return batch;
     }
 
 
@@ -161,6 +172,34 @@ public:
         insertedData[scheduleStep].push_back(value);
         std::cout << "DEBUG: Inserted " << value << " From " << senderID << " With reqID: " << reqID << " At scheduleStep: " << scheduleStep << "\n";
 
-        saveData();
+        appendData(scheduleStep, value);
+        updateReqFile();
     }
+
+    void persistData() {
+        if(currentBatchSize > 0) {
+            overridePersistedData(); // Assuming result was persisted, we can get rid of data points elaborated
+        }
+    }
+
+    bool isEmpty(){
+        for (const auto& pair : insertedData) {
+            if (!pair.second.empty()) {
+                // Found a non-empty deque
+                return false;
+            }
+        }
+        // All deques are empty
+        return true;
+    }
+
+    void printScheduledData(){
+        for(int i = 0; i<insertedData.size(); i++){
+            std::cout << "Step " << i << ": ";
+            for(int j = 0; j < insertedData[i].size(); j++){
+                std::cout << insertedData[i][j] << " ";
+            }
+        std::cout << std::endl;
+    }
+}
 };

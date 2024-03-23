@@ -21,9 +21,14 @@ using namespace omnetpp;
 class Leader : public cSimpleModule
 {
     private:
+        bool firstTime = true;
         bool finished;
+        bool reallyFinished;
         int numWorkers;
         int scheduleSize;
+        std::vector<int> ckReceived;
+        std::vector<int> ckSent;
+        std::vector<int> workerResult;
         simtime_t interval;
         simtime_t timeout;
         std::vector<std::string> schedule;
@@ -39,7 +44,8 @@ class Leader : public cSimpleModule
         virtual void initialize() override;
         virtual void finish() override;
         virtual void handleMessage(cMessage *msg) override;
-        void handleFinishElaborationMessage(cMessage *msg, bool local, int id);
+        void handleFinishElaborationMessage(FinishLocalElaborationMessage *msg);
+        void handleCheckChangeKeyAckMessage(CheckChangeKeyAckMessage *msg);
         void handlePingMessage(cMessage *msg, int id);
         void checkPing();
         void sendPing();
@@ -50,8 +56,10 @@ class Leader : public cSimpleModule
         void sendCustomSchedule();
         int numberOfFilters(int scheduleSize);
         void calcResult();
+        void calcResultFor();
         void printingVector(std::vector<int> vector);
         void printingStringVector(std::vector<std::string> vector);
+        int counter(std::vector<int> vec);
 };
 
 Define_Module(Leader);
@@ -79,28 +87,40 @@ void Leader::initialize()
     data_clone = data;
 
     // Call the function for sending the schedule
-	sendSchedule();
+	sendCustomSchedule();
 
 	finishedWorkers.resize(numWorkers);
 	pingWorkers.resize(numWorkers);
+    workerResult.resize(numWorkers);
+    ckSent.resize(numWorkers);
+    ckReceived.resize(numWorkers);
 
 	interval = 2.5;
 	ping_msg = new cMessage("sendPing");
 	scheduleAt(simTime() + interval, ping_msg);
 
-	timeout = 1.3;
+	timeout = 2;
 	check_msg = new cMessage("checkPing");
 	scheduleAt(simTime() + interval + timeout, check_msg);
 }
 
 void Leader::finish() {
-    calcResult();
+    calcResultFor();
     std::cout << "Result should be: " << std::endl;
     if(data.size() == 1) {
         std::cout << data[0] << std::endl;
     } else {
         printingVector(data);
     }
+    std::cout << "And from the workers: ";
+
+    int res = 0;
+    for(int val : workerResult) {
+        res += val;
+    }
+
+    std::cout << res << std::endl << std::endl;
+
     std::cout << "For testing: " << std::endl;
     std::cout << "Data: {";
     printingVector(data_clone);
@@ -121,6 +141,57 @@ void Leader::finish() {
         cancelEvent(check_msg);
     }
     delete check_msg;
+}
+
+void Leader::calcResultFor() {
+    std::vector<int> filteredData; // Use this for operations that might change data size.
+
+    for (size_t i = 0; i < schedule.size(); ++i) {
+        const std::string& op = schedule[i];
+        int param = parameters[i];
+        filteredData.clear(); // Clear it for every operation that uses it.
+
+        if (op == "add" || op == "sub" || op == "mul" || op == "div") {
+            for (int& value : data) {
+                if (op == "add") {
+                    value += param;
+                } else if (op == "sub") {
+                    value -= param;
+                } else if (op == "mul") {
+                    value *= param;
+                } else if (op == "div") {
+                    value /= param; // Assuming param != 0
+                }
+            }
+        } else if (op == "gt" || op == "lt" || op == "ge" || op == "le") {
+            for (int value : data) {
+                bool condition = false;
+                if (op == "gt") {
+                    condition = (value > param);
+                } else if (op == "lt") {
+                    condition = (value < param);
+                } else if (op == "ge") {
+                    condition = (value >= param);
+                } else if (op == "le") {
+                    condition = (value <= param);
+                }
+
+                if (condition) {
+                    filteredData.push_back(value);
+                }
+            }
+            data = filteredData; // Update data with filtered results.
+        } else if (op == "reduce") {
+            int sum = 0;
+            for (int value : data) {
+                sum += value;
+            }
+            data.clear();
+            data.push_back(sum);
+            break; // No further operation is expected after reduce.
+        }
+        // Ignoring 'changekey' as instructed.
+    }
 }
 
 void Leader::calcResult() {
@@ -168,9 +239,9 @@ void Leader::calcResult() {
 
 void Leader::sendCustomSchedule()
 {
-    scheduleSize = 4;
-    schedule = {"add","gt","changekey", "reduce"};
-    parameters = {1,10,0,0};
+    scheduleSize = 6;
+    schedule = {"gt", "changekey", "add", "changekey", "add", "reduce"};
+    parameters = {30,0,2,0,2,0};
     bool reduceFound = true;
     for(int i = 0; i < numWorkers; i++)
     {
@@ -197,21 +268,23 @@ void Leader::handleMessage(cMessage *msg)
     FinishLocalElaborationMessage *finishLocalMsg = dynamic_cast<FinishLocalElaborationMessage *>(msg);
     if(finishLocalMsg != nullptr)
     {
-        handleFinishElaborationMessage(finishLocalMsg, true, finishLocalMsg -> getWorkerId());
+        handleFinishElaborationMessage(finishLocalMsg);
+        delete msg;
         return;
     }
 
     CheckChangeKeyAckMessage *checkChangeKeyAckMsg = dynamic_cast<CheckChangeKeyAckMessage *>(msg);
     if(checkChangeKeyAckMsg != nullptr)
     {
-        handleFinishElaborationMessage(checkChangeKeyAckMsg, false, checkChangeKeyAckMsg -> getWorkerId());
+        handleCheckChangeKeyAckMessage(checkChangeKeyAckMsg);
+        delete msg;
         return;
     }
 
     // Self message to send ping to all worker nodes
     if(msg == ping_msg)
     {
-        if(finished) return;
+        if(reallyFinished) return;
 
         sendPing();
         return;
@@ -220,7 +293,7 @@ void Leader::handleMessage(cMessage *msg)
     // Self message to check who did not send a ping to the leader node
     if(msg == check_msg)
     {
-        if(finished) return;
+        if(reallyFinished) return;
 
         checkPing();
         return;
@@ -237,7 +310,7 @@ void Leader::handleMessage(cMessage *msg)
 
 }
 
-void Leader::handleFinishElaborationMessage(cMessage *msg, bool local, int id)
+/*void Leader::handleFinishElaborationMessage(cMessage *msg, bool local, int id)
 {   
     finishedWorkers[id] = 1;
     delete msg;
@@ -280,6 +353,57 @@ void Leader::handleFinishElaborationMessage(cMessage *msg, bool local, int id)
                     finishSimMsg -> setWorkerId(i);
                     send(finishSimMsg, "out", i);
                 }
+        }
+    }
+}*/
+
+void Leader::handleFinishElaborationMessage(FinishLocalElaborationMessage *msg){
+    int id = msg -> getWorkerId();
+    finishedWorkers[id] = 1;
+
+    finished = true;
+    for(int i = 0; i < numWorkers; i++){
+        if(finishedWorkers[i] == 0){
+            finished = false;
+            break;
+        }
+    }
+
+    ckReceived[id] = msg -> getChangeKeyReceived();
+    ckSent[id] = msg -> getChangeKeySent();
+
+    //TODO: change the message type replacing this with a new message more understandable
+    FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
+    finishLocalMsg -> setWorkerId(id);
+    send(finishLocalMsg, "out", id);
+}
+
+void Leader::handleCheckChangeKeyAckMessage(CheckChangeKeyAckMessage *msg){
+    int id = msg -> getWorkerId();
+
+    ckReceived[id] = msg -> getChangeKeyReceived();
+    ckSent[id] = msg -> getChangeKeySent();
+    workerResult[id] = msg -> getPartialRes();
+
+    EV<<"ChangeKeyReceived: "<<counter(ckReceived)<<" ChangeKeySent: "<<counter(ckSent)<<endl;
+    EV<<"Finished: "<<finished<<endl;
+    if(counter(ckReceived) != counter(ckSent) && finished){
+        for(int i = 0; i < numWorkers; i++){
+            
+            FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
+            finishLocalMsg -> setWorkerId(i);
+            send(finishLocalMsg, "out", i);
+            
+        }
+    }else{
+        if(finished && firstTime){
+            firstTime = false;
+            for(int i = 0; i < numWorkers; i++){
+                FinishSimMessage* finishSimMsg = new FinishSimMessage();
+                finishSimMsg -> setWorkerId(id);
+                send(finishSimMsg, "out", id);
+                reallyFinished = true;
+            }
         }
     }
 }
@@ -363,7 +487,7 @@ void Leader::sendData(int idDest)
     msg -> setAssigned_id(idDest);
     
     // Generate a random dimension for the array of values
-    int numElements = (rand () % 100) + 1;
+    int numElements = (rand () % 8) + 1;
     std::cout << "#elements: " << numElements << std::endl;
     
     msg -> setDataArraySize(numElements);
@@ -518,3 +642,14 @@ void Leader::printingStringVector(std::vector<std::string> vector){
         std::cout<< "\"" <<vector[i] << "\"" <<", ";
     }
 }
+
+int Leader::counter(std::vector<int> vec)
+{
+    int count = 0;
+    for(int i=0; i < vec.size(); i++)
+    {
+        count += vec[i];
+    }
+    return count;
+}
+

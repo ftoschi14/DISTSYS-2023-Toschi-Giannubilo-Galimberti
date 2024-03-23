@@ -50,7 +50,6 @@ public:
 			std::cerr << "Failed to open file: " << fileName << std::endl;
 			return {};
 		}
-		saveProgress(); // Save current position before reading next N lines
 		file.seekg(filePosition); // Move to the last processed batch
 
 		if (!file) {
@@ -66,14 +65,11 @@ public:
 			// Extract and store the value part of the key-value pair
 			int value = extractValue(line);
 			batchValues.push_back(value);
-
+			std::cout << value << " ";
 			linesRead++;
 		}
+		std::cout << std::endl;
 
-		// After reading
-		if (!file.eof() && file.fail()) {
-		    file.clear(); // Clears the failbit
-		}
 		filePosition = file.tellg();
 
 		file.close();
