@@ -45,13 +45,14 @@ private:
 	float failureProbability;
 	int workerId;
 	float timeout;
-	int iterations;
 	int currentBatch;
 	bool failed;
 	bool localFinish;
 	int changeKeyCtr;
 	int numWorkers;
 	float changeKeyProbability;
+	int changeKeySent;
+	int changeKeyReceived;
 
 	//cMessage *localExEvent;
 	//cMessage *changeKeyExEvent;
@@ -86,7 +87,6 @@ protected:
 	void persistingResult(std::vector<int> result);
 	void persistingReduce(int reduce);
 	void printingVector(std::vector<int> vector);
-	
 };
 
 Define_Module(Worker);
@@ -101,8 +101,10 @@ void Worker::initialize(){
 	data.resize(batchSize);
 	timeout=5;
 	changeKeyCtr = 0;
-	changeKeyProbability = 0.1;
+	changeKeyProbability = 0.4;
 	currentBatch = 0;
+	changeKeySent = 0;
+	changeKeyReceived = 0;
 }
 
 void Worker::handleMessage(cMessage *msg){
@@ -110,138 +112,158 @@ void Worker::handleMessage(cMessage *msg){
 	*  Get the context pointer, if not null it should correspond to a request ID
 	*  Get the corresponding timeout and insertMsg, re-send it and re-schedule a timeout.
 	*/
-	int *pReqID = static_cast<int *>(msg->getContextPointer());
-	if(pReqID != nullptr){
-		int reqID = *pReqID;
-		delete pReqID;
-		// Check if the corresponding timeout exists
-		auto timeoutMsg = timeouts.find(reqID);
-		if(timeoutMsg != timeouts.end()){
-			delete timeoutMsg->second; // Safe because it's not scheduled anymore.
+	if(!failed)
+	{
+		std::cout << "Worker " << workerId << " received a message: " << msg->getName() << std::endl;
+		int *pReqID = static_cast<int *>(msg->getContextPointer());
+		if(pReqID != nullptr){
+			int reqID = *pReqID;
+			delete pReqID;
+			// Check if the corresponding timeout exists
+			auto timeoutMsg = timeouts.find(reqID);
+			if(timeoutMsg != timeouts.end()){
+				delete timeoutMsg->second; // Safe because it's not scheduled anymore.
 
-			// Check if the corresponding insertMessage exists
-			auto insertMsg = unstableMessages.find(reqID);
-			if(insertMsg != unstableMessages.end()){
+				// Check if the corresponding insertMessage exists
+				auto insertMsg = unstableMessages.find(reqID);
+				if(insertMsg != unstableMessages.end()){
 
-				// Get the worker ID from the message
-				int destWorker = insertMsg->second->getDestID();
-				DataInsertMessage* insertMsgCopy = insertMsg->second->dup();
-				send(insertMsgCopy, "out", getWorkerGate(destWorker));
+					// Get the worker ID from the message
+					int destWorker = insertMsg->second->getDestID();
+					DataInsertMessage* insertMsgCopy = insertMsg->second->dup();
+					send(insertMsgCopy, "out", getWorkerGate(destWorker));
 
-				// Reschedule the timeout for this message
-                cMessage* newTimeoutMsg = new cMessage(("Timeout-" + std::to_string(reqID)).c_str());
-                newTimeoutMsg->setContextPointer(new int(reqID));
-                scheduleAt(simTime() + timeout, newTimeoutMsg);
+					// Reschedule the timeout for this message
+					cMessage* newTimeoutMsg = new cMessage(("Timeout-" + std::to_string(reqID)).c_str());
+					newTimeoutMsg->setContextPointer(new int(reqID));
+					scheduleAt(simTime() + timeout, newTimeoutMsg);
 
-                // Update maps with the new timeout message and remove the old one
-                timeouts[reqID] = newTimeoutMsg;
-                return;
+					// Update maps with the new timeout message and remove the old one
+					timeouts[reqID] = newTimeoutMsg;
+					return;
+				}
+				return;
 			}
+		}
+
+		PingMessage *pingMsg = dynamic_cast<PingMessage *>(msg);
+		if(pingMsg != nullptr){
+			if(!failed){
+				//replyPingMsg = pingMsg;
+				// Generate random delay
+				float delay = lognormal(PING_DELAY_AVG, PING_DELAY_VAR); // Log-normal to have always positive increments
+				PingResEventMessage* pingResEvent = new PingResEventMessage();
+				// Schedule response event
+				scheduleAt(simTime() + delay , pingResEvent);
+				return;
+			}else{
+				return;
+			}
+		}
+
+		SetupMessage *setupMsg = dynamic_cast<SetupMessage *>(msg);
+		if(setupMsg != nullptr){
+			// Successfully cast to SetupMessage, handle it
+			handleSetupMessage(setupMsg);
+			return;
+		}
+
+		ScheduleMessage *scheduleMsg = dynamic_cast<ScheduleMessage *>(msg);
+		if (scheduleMsg != nullptr) {
+			// Successfully cast to ScheduleMessage, handle it
+			handleScheduleMessage(scheduleMsg);
+			return;
+		}
+		LocalExEventMessage *localExEvent = dynamic_cast<LocalExEventMessage *>(msg);
+		if(localExEvent != nullptr){
+			EV<<"\nLocalExEvent at worker: "<<workerId<<"\n\n";
+			std::cout << "LocalExEvent at worker: " << workerId << std::endl;
+			handleLocalExEvent(msg);
+			return;
+		}
+		ChangeKeySelfMessage *changeKeySelf = dynamic_cast<ChangeKeySelfMessage *>(msg);
+		if(changeKeySelf != nullptr){
+			EV<<"\nChangeKeyExEvent at worker: "<<workerId<<"\n\n";
+			handleChangeKeyExEvent(msg);
+			return;
+		}
+		PingResEventMessage *pingResEvent = dynamic_cast<PingResEventMessage *>(msg);
+		if(pingResEvent != nullptr){
+			EV<<"\nPingResEvent at worker: "<<workerId<<"\n\n";
+			handlePingMessage(msg);
+			return;
+		}
+		// DataInsertMessage (Could be either to insert here, or an ACK)
+		DataInsertMessage *dataInsertMsg = dynamic_cast<DataInsertMessage *>(msg);
+		if(dataInsertMsg != nullptr){
+			//Successfully cast to DataInsertMessage, handle it
+			handleDataInsertMessage(dataInsertMsg);
+			return;
+		}
+
+		FinishLocalElaborationMessage *finishLocalMsg = dynamic_cast<FinishLocalElaborationMessage *>(msg);
+		if(finishLocalMsg != nullptr){
+			localFinish = true;
+			EV<<"Start executing the remain schedule for the latecomers change key data\n";
+			handleFinishLocalElaborationMessage(finishLocalMsg);
+			return;
+		}
+
+		FinishSimMessage *finishSimMsg = dynamic_cast<FinishSimMessage *>(msg);
+		if(finishSimMsg != nullptr){
+			handleFinishSimMessage(finishSimMsg);
 			return;
 		}
 	}
 
-	PingMessage *pingMsg = dynamic_cast<PingMessage *>(msg);
-	if(pingMsg != nullptr)
-	{
-		//replyPingMsg = pingMsg;
-		// Generate random delay
-		float delay = lognormal(PING_DELAY_AVG, PING_DELAY_VAR); // Log-normal to have always positive increments
-		PingResEventMessage* pingResEvent = new PingResEventMessage();
-		// Schedule response event
-        scheduleAt(simTime() + delay , pingResEvent);
-		return;
-	}
-
 	RestartMessage *restartMsg = dynamic_cast<RestartMessage *>(msg);
-    if(restartMsg != nullptr) {
-    	// Successfully cast to RestartMessage, handle it
-    	handleRestartMessage(restartMsg);
-    	return;
-    }
-
-	SetupMessage *setupMsg = dynamic_cast<SetupMessage *>(msg);
-    if(setupMsg != nullptr){
-        // Successfully cast to SetupMessage, handle it
-        handleSetupMessage(setupMsg);
-        return;
-    }
-
-	ScheduleMessage *scheduleMsg = dynamic_cast<ScheduleMessage *>(msg);
-    if (scheduleMsg != nullptr) {
-        // Successfully cast to ScheduleMessage, handle it
-        handleScheduleMessage(scheduleMsg);
-        return;
-    }
-	LocalExEventMessage *localExEvent = dynamic_cast<LocalExEventMessage *>(msg);
-	if(localExEvent != nullptr){
-		EV<<"\nLocalExEvent at worker: "<<workerId<<"\n\n";
-		handleLocalExEvent(msg);
+	if(restartMsg != nullptr) {
+		// Successfully cast to RestartMessage, handle it
+		handleRestartMessage(restartMsg);
 		return;
 	}
-	ChangeKeySelfMessage *changeKeySelf = dynamic_cast<ChangeKeySelfMessage *>(msg);
-	if(changeKeySelf != nullptr){
-		EV<<"\nChangeKeyExEvent at worker: "<<workerId<<"\n\n";
-		handleChangeKeyExEvent(msg);
-		return;
-	}
-	PingResEventMessage *pingResEvent = dynamic_cast<PingResEventMessage *>(msg);
-	if(pingResEvent != nullptr)
-	{
-    	// EV<<"\nPingResEvent at worker: "<<workerId<<"\n\n";
-    	handlePingMessage(msg);
-    	return;
-    }
-    // DataInsertMessage (Could be either to insert here, or an ACK)
-    DataInsertMessage *dataInsertMsg = dynamic_cast<DataInsertMessage *>(msg);
-    if(dataInsertMsg != nullptr){
-    	//Successfully cast to DataInsertMessage, handle it
-    	handleDataInsertMessage(dataInsertMsg);
-    	return;
-    }
-
-	FinishLocalElaborationMessage *finishLocalMsg = dynamic_cast<FinishLocalElaborationMessage *>(msg);
-	if(finishLocalMsg != nullptr){
-		localFinish = true;
-		EV<<"Start executing the remain schedule for the latecomers change key data\n";
-		handleFinishLocalElaborationMessage(finishLocalMsg);
-		return;
-	}
-
-    FinishSimMessage *finishSimMsg = dynamic_cast<FinishSimMessage *>(msg);
-	if(finishSimMsg != nullptr)
-	{
-		handleFinishSimMessage(finishSimMsg);
-		return;
-	}
+	
 }
 
 void Worker::handlePingMessage(cMessage *msg)
 {
-	EV << "WORKER "<< workerId << " -> Ping message received" << std::endl;
+    EV << "WORKER "<< workerId << " -> Ping message received" << std::endl;
 
-	PingMessage *replyPingMsg = new PingMessage();
-	replyPingMsg -> setWorkerId(workerId);
-	send(replyPingMsg, "out", LEADER_PORT);
-	delete msg;
+    PingMessage *replyPingMsg = new PingMessage();
+    replyPingMsg -> setWorkerId(workerId);
+    send(replyPingMsg, "out", LEADER_PORT);
 
-	return;
+    delete msg;
+    return;
 }
 
 void Worker::handleRestartMessage(RestartMessage *msg){
-	if(!failed)
-	{
-		EV << "Worker " << workerId << " received a RestartMessage, but has not failed: Restarting..." << std::endl;
-		deallocatingMemory();
+	if(!failed){
+		std::cout << "Worker " << workerId << " received a RestartMessage, but has not failed: Restarting..." << std::endl;
+		//deallocatingMemory();
+		return;
 	}
+	EV<<"\nRestarting worker: "<<workerId<<"\n\n";
 	failed = false;
 	workerId = msg->getWorkerID();
+	batchSize = par("batchSize").intValue();
+	numWorkers = par("numWorkers").intValue();
+
 	initializeDataModules();
-	// Re-Initialized worker and data modules, now wait for schedule and re-start processing
 	
-	float delay = lognormal(RESTART_DELAY_AVG, RESTART_DELAY_VAR);
+	// Re-Initialized worker and data modules, now copy schedule and re-start processing
+
+	int scheduleSize = msg->getScheduleArraySize();
+
+    for(int i=0; i<scheduleSize; i++){
+        schedule.push_back(msg->getSchedule(i)) ;
+		parameters.push_back(msg->getParameters(i));
+    }
+	
+	//float delay = lognormal(RESTART_DELAY_AVG, RESTART_DELAY_VAR);
+	std::cout << "Worker " << workerId << " is restarting with schedule: " << schedule[0] << std::endl;
 	LocalExEventMessage *localExEvent = new LocalExEventMessage();
-	scheduleAt(simTime() + delay, localExEvent);
+	scheduleAt(simTime()+1, localExEvent);
 	
 	delete msg;
 	return;
@@ -255,7 +277,6 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 	}
 
 	int dataSize = msg->getDataArraySize();
-	iterations = (dataSize / batchSize) +1;
 	//Persisting data on file
 	folder = "Data/Worker_" + std::to_string(workerId) + "/";
 	std::ofstream data_file;
@@ -290,9 +311,8 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
 
 void Worker::handleLocalExEvent(cMessage *msg){
 	delete msg;
-
-	if(currentBatch < iterations){
-		data = loader->loadBatch();	
+	data = loader->loadBatch();
+	if(!data.empty()){	
 		applySchedule(schedule, parameters, data);
 		if(failed){
 			return;
@@ -304,6 +324,8 @@ void Worker::handleLocalExEvent(cMessage *msg){
 		EV<<"\nSENDING FINISHED LOCAL ELABORATION WORKER: "<<workerId<<"\n\n";
 		FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
 		finishLocalMsg->setWorkerId(workerId);
+		finishLocalMsg->setChangeKeyReceived(changeKeyReceived);
+		finishLocalMsg->setChangeKeySent(changeKeySent);
 		send(finishLocalMsg, "out", 0);	
 	}
 }
@@ -326,8 +348,10 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 			EV << "Received ACK, deleting unstable message";
 			unstableMessages.erase(reqID);
 		}
+		changeKeySent++;
 	} else {
 		// Insert new data point into data vector
+		
 		int gateIndex = msg->getArrivalGate()->getIndex();
 		int senderID = getInboundWorkerID(gateIndex);
 
@@ -337,7 +361,7 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 		DataInsertMessage* insertMsg = new DataInsertMessage();
 		insertMsg->setReqID(msg->getReqID());
 		insertMsg->setAck(true);
-
+		changeKeyReceived++;
 		send(insertMsg, "out", gateIndex);
 	}
 	ChangeKeySelfMessage* changeKeySelf = new ChangeKeySelfMessage();
@@ -378,6 +402,8 @@ void Worker::handleChangeKeyExEvent(cMessage *msg){
 		if(localFinish){
 			CheckChangeKeyAckMessage* checkChangeKeyAckMsg = new CheckChangeKeyAckMessage();
 			checkChangeKeyAckMsg->setWorkerId(workerId);
+			checkChangeKeyAckMsg->setChangeKeyReceived(changeKeyReceived);
+			checkChangeKeyAckMsg->setChangeKeySent(changeKeySent);
 			send(checkChangeKeyAckMsg, "out", 0);
 			EV<<"\nChangeKey checked at worker: "<<workerId<<"\n\n";
 		}
@@ -387,12 +413,13 @@ void Worker::handleChangeKeyExEvent(cMessage *msg){
 void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg){
 	ChangeKeySelfMessage* changeKeySelf = new ChangeKeySelfMessage();
 	scheduleAt(simTime() + FINISH_EXEC_DELAY , changeKeySelf);
+
 	delete msg;
 }
 
 void Worker::handleFinishSimMessage(FinishSimMessage *msg)
 {
-	EV << "Application finished at worker: " << workerId << std::endl;
+	EV << " Application finished at worker: " << workerId << std::endl;
 	if(msg -> getWorkerId() == 3)
 	{
 	    endSimulation();
@@ -402,10 +429,13 @@ void Worker::handleFinishSimMessage(FinishSimMessage *msg)
 
 void Worker::initializeDataModules() {
 	// Instantiate a BatchLoader
+	folder = "Data/Worker_" + std::to_string(workerId) + "/";
 	fileProgressName = folder + "progress.txt";
+	fileName = folder + "data.csv";
 	loader = new BatchLoader(fileName, fileProgressName, batchSize);
 
 	// Instantiate an InsertManager
+
 	std::string insertFilename = folder + "inserted.csv";
 	std::string requestFilename = folder + "requests_log.csv";
 	insertManager = new InsertManager(insertFilename, requestFilename, batchSize);
@@ -567,6 +597,7 @@ void Worker::deallocatingMemory(){
 	for(auto& pair : timeouts){
 		cancelAndDelete(pair.second);
 	}
+
 	timeouts.clear();
 
 	fileName = "";
@@ -575,8 +606,19 @@ void Worker::deallocatingMemory(){
 	failureProbability = 0;
 	workerId = 0;
 	timeout = 0;
-	iterations = 0;
 	delete loader;
+	delete insertManager;
+	changeKeyCtr = 0;
+	changeKeyProbability = 0;
+	changeKeySent = 0;
+	changeKeyReceived = 0;
+	failed = true;
+	localFinish = false;
+	currentBatch = 0;
+	schedule.clear();
+	parameters.clear();
+
+	
 }
 
 std::vector<int> Worker::discardingData(std::vector<int> discard, std::vector<int> data) {
