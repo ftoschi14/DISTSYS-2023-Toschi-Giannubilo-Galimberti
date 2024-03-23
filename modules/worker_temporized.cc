@@ -50,8 +50,9 @@ private:
 	// Data structures to hold batch, and insertions in progress
 	std::map<int, std::deque<int>> data;
 	std::map<int, std::deque<int>> debugData;
-	std::map<int, DataInsertMessage*> unstableMessages;
-	std::map<int, cMessage*> timeouts;
+
+	DataInsertMessage* unstableMessage;
+	cMessage* insertTimeoutMsg;
 
 	// Information on working folder and files
 	std::string folder;
@@ -74,6 +75,7 @@ private:
 	// For ChangeKey protocol
 	int changeKeySent;
 	int changeKeyReceived;
+	bool waitingForInsert;
 
 	// Current Batch Elaboration information
 	int currentScheduleStep;
@@ -177,17 +179,14 @@ void Worker::finish(){
 		std::cout << tmpReduce << std::endl;
 	} 
 	//data.clear();
-	for(auto &pair : unstableMessages) {
-        DataInsertMessage* msg = pair.second; // Extract the pointer to the message
-        delete msg; // Delete the message
-    }
-    unstableMessages.clear();
+	if(waitingForInsert) {
+		delete unstableMessage;
+	}
 
-    for(auto &pair : timeouts) {
-        cMessage* msg = pair.second; // Extract the pointer to the message
-        delete msg; // Delete the message
-    }
-	timeouts.clear();
+	if(insertTimeoutMsg != nullptr && insertTimeoutMsg->isScheduled() && waitingForInsert){
+		cancelEvent(insertTimeoutMsg);
+	}
+
 
 	if(failed){
 		std::cout << "Finished, but a worker has failed" << std::endl;
@@ -223,35 +222,15 @@ void Worker::handleMessage(cMessage *msg){
 	*  Get the context pointer, if not null it should correspond to a request ID
 	*  Get the corresponding timeout and insertMsg, re-send it and re-schedule a timeout.
 	*/
-	int *pReqID = static_cast<int *>(msg->getContextPointer());
-	if(pReqID != nullptr){
-		int reqID = *pReqID;
-		delete pReqID;
-		// Check if the corresponding timeout exists
-		auto timeoutMsg = timeouts.find(reqID);
-		if(timeoutMsg != timeouts.end()){
-			delete timeoutMsg->second; // Safe because it's not scheduled anymore.
+	if(msg == insertTimeoutMsg) {
+		// Get the worker ID from the message
+		int destWorker = unstableMessage->getDestID();
+		DataInsertMessage* insertMsgCopy = unstableMessage->dup();
+		send(insertMsgCopy, "out", getWorkerGate(destWorker));
 
-			// Check if the corresponding insertMessage exists
-			auto insertMsg = unstableMessages.find(reqID);
-			if(insertMsg != unstableMessages.end()){
-
-				// Get the worker ID from the message
-				int destWorker = insertMsg->second->getDestID();
-				DataInsertMessage* insertMsgCopy = insertMsg->second->dup();
-				send(insertMsgCopy, "out", getWorkerGate(destWorker));
-
-				// Reschedule the timeout for this message
-                cMessage* newTimeoutMsg = new cMessage(("Timeout-" + std::to_string(reqID)).c_str());
-                newTimeoutMsg->setContextPointer(new int(reqID));
-                scheduleAt(simTime() + insertTimeout, newTimeoutMsg);
-
-                // Update maps with the new timeout message and remove the old one
-                timeouts[reqID] = newTimeoutMsg;
-                return;
-			}
-			return;
-		}
+		// Reschedule the timeout for this message
+        scheduleAt(simTime() + insertTimeout, insertTimeoutMsg);
+        return;
 	}
 
 	PingMessage *pingMsg = dynamic_cast<PingMessage *>(msg);
@@ -385,26 +364,11 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 	// Check if it is an ACK or an insertion to me (workerID)
 	if(msg->getAck()){
 		// Look for corresponding reqID and cancel timeout
-		int reqID = msg->getReqID();
+		cancelEvent(insertTimeoutMsg);
+		delete unstableMessage;
 
-		auto timeoutMsg = timeouts.find(reqID);
-		if(timeoutMsg != timeouts.end()){
-			EV << "Received ACK, cancelling timeout";
-			cancelAndDelete(timeoutMsg->second);
-			timeouts.erase(reqID);
-		}
-
-		auto insertMsgPair = unstableMessages.find(reqID);
-		if(insertMsgPair != unstableMessages.end()){
-			EV << "Received ACK, deleting unstable message";
-			DataInsertMessage *dupMsg = dynamic_cast<DataInsertMessage *>(insertMsgPair->second);
-			delete dupMsg;
-			unstableMessages.erase(reqID);
-		}
-
-		if(!nextStepMsg->isScheduled()) { 
-			scheduleAt(simTime(), nextStepMsg);
-		}
+		scheduleAt(simTime(), nextStepMsg);
+		waitingForInsert = false;
 		changeKeySent++;
 	} else {
 		// Insert new data point into data vector
@@ -496,11 +460,6 @@ void Worker::processStep(){
 	if(failed) return;
 
 	if(currentScheduleStep >= schedule.size()) {
-		if(!unstableMessages.empty()) {
-			std::cout << "Worker " << workerId << " - Waiting for Data Insert ACKs before moving to next batch..." << std::endl;
-			return;
-		}
-
 		if(reduceLast) {
 			persistingReduce(tmpReduce);
 		} else {
@@ -570,8 +529,9 @@ void Worker::processStep(){
 			}
 		}
 
-		float delay = calculateDelay(schedule[currentScheduleStep]);
+		if(waitingForInsert) return;
 
+		float delay = calculateDelay(schedule[currentScheduleStep]);
 		scheduleAt(simTime()+delay, nextStepMsg);
 	} else {
 		EV << "Empty map, finished current step\n\n";
@@ -736,7 +696,7 @@ int Worker::reduce(std::vector<int> data){
 
 void Worker::loadPartialResults(){
 	std::string res_filename = "Data/Worker_" + std::to_string(workerId) + "/result.csv";
-	std::ifstream res_file(res_filename);
+	std::ifstream res_file(res_filename, std::ios::binary);
 	std::string line;
 
 	if(res_file.is_open()){
@@ -752,7 +712,7 @@ void Worker::loadPartialResults(){
 	}
 
 	std::string ck_filename = "Data/Worker_" + std::to_string(workerId) + "/Data_CK.csv";
-	std::ifstream ck_file(ck_filename);
+	std::ifstream ck_file(ck_filename, std::ios::binary);
 
 	if(ck_file.is_open()){
 		if (std::getline(ck_file, line)) {
@@ -789,15 +749,13 @@ void Worker::deallocatingMemory(){
 	debugData = data;
 	data.clear();
 
-	for (auto& pair : unstableMessages) {
-		cancelEvent(pair.second);
+	if(waitingForInsert) {
+		delete unstableMessage;
 	}
-	unstableMessages.clear();
 
-	for(auto& pair : timeouts){
-		cancelEvent(pair.second);
+	if(insertTimeoutMsg != nullptr && insertTimeoutMsg->isScheduled() && waitingForInsert){
+		cancelEvent(insertTimeoutMsg);
 	}
-	timeouts.clear();
 
 	fileName = "";
 	fileProgressName = "";
@@ -820,6 +778,7 @@ void Worker::deallocatingMemory(){
 	// General Elaboration Information
 	finishedLocalElaboration = false;
 	finishedPartialCK = false;
+	waitingForInsert = false;
 	//checkChangeKeyReceived = false;
 	//finishNoticeSent = false;
 
@@ -837,6 +796,7 @@ void Worker::deallocatingMemory(){
 	if(nextStepMsg != nullptr && nextStepMsg->isScheduled()) {
 		cancelEvent(nextStepMsg);
 	}
+	std::cout << "Crashed successfully\n";
 }
 
 void Worker::sendData(int newKey, int value, int scheduleStep){
@@ -860,15 +820,17 @@ void Worker::sendData(int newKey, int value, int scheduleStep){
 	send(insertMsgCopy, "out", outputGate);
 
 	//add req to queue and wait for ACK, set timeout
-	unstableMessages[changeKeyCtr] = insertMsg;
+	unstableMessage = insertMsg;
 
 	cMessage* timeoutMsg = new cMessage(("Timeout-" + std::to_string(changeKeyCtr)).c_str());
 	timeoutMsg->setContextPointer(new int(changeKeyCtr));
 
 	scheduleAt(simTime() + insertTimeout, timeoutMsg);
 
-	timeouts[changeKeyCtr] = timeoutMsg;
+	insertTimeoutMsg = timeoutMsg;
 	changeKeyCtr++;
+
+	waitingForInsert = true;
 }
 
 int Worker::getInboundWorkerID(int gateIndex) {
