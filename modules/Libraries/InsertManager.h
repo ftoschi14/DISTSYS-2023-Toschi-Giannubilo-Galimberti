@@ -20,13 +20,13 @@ private:
     void overridePersistedData() {
         std::ofstream insertFile(insertFilename);
         if (!insertFile.is_open()) {
-            std::cerr << "Error opening insert file for writing." << std::endl;
+            std::cout << "Error opening insert file for writing.\n";
             return;
         }
 
         for (const auto& stepPair : insertedData) {
             for (const int value : stepPair.second) {
-                insertFile << stepPair.first << ',' << value << std::endl;
+                insertFile << stepPair.first << ',' << value << "\n";
             }
         }
         insertFile.close();
@@ -35,12 +35,12 @@ private:
     void appendData(int step, int value) {
         std::ofstream insertFile(insertFilename, std::ios::app);
         if (!insertFile.is_open()) {
-            std::cerr << "Error opening insert file for writing." << std::endl;
+            std::cout << "Error opening insert file for writing.\n";
             return;
         }
 
         // Append the new key-value pair.
-        insertFile << step << ',' << value << std::endl;
+        insertFile << step << ',' << value << "\n";
 
         insertFile.close();
     }
@@ -48,20 +48,20 @@ private:
     void updateReqFile() {
         std::ofstream reqFile(requestFilename);
         if (!reqFile.is_open()) {
-            std::cerr << "Error opening request file for writing." << std::endl;
+            std::cout << "Error opening request file for writing.\n";
             return;
         }
 
         for (const auto& reqPair : senderReqMap) {
-            reqFile << reqPair.first << ',' << reqPair.second << std::endl;
+            reqFile << reqPair.first << ',' << reqPair.second << "\n";
         }
         reqFile.close();
     }
 
     void loadData() {
-        std::ifstream insertFile(insertFilename);
+        std::ifstream insertFile(insertFilename, std::ios::binary);
         if (!insertFile.is_open()) {
-            std::cerr << "Error opening insert file for reading." << std::endl;
+            std::cout << "Error opening insert file for reading.\n";
             return;
         }
         std::string line;
@@ -83,9 +83,9 @@ private:
         }
         insertFile.close();
 
-        std::ifstream reqFile(requestFilename);
+        std::ifstream reqFile(requestFilename, std::ios::binary);
         if (!reqFile.is_open()) {
-            std::cerr << "Error opening request file for reading." << std::endl;
+            std::cout << "Error opening request file for reading.\n";
             return;
         }
 
@@ -111,7 +111,7 @@ private:
 
 public:
     InsertManager() : insertFilename(""), requestFilename(""), batchSize(0) {
-        std::cout << "WARNING: Using default InsertManager constructor - missing filenames and BatchSize";
+        std::cout << "WARNING: Using default InsertManager constructor - missing filenames and BatchSize\n";
     }
 
     InsertManager(const std::string& insertFilename, const std::string& requestFilename, int batchSize)
@@ -121,10 +121,10 @@ public:
             loadData();
         } else {
             if (!fs::exists(insertFilename)) {
-                std::cerr << "Insert file does not exist, starting with an empty dataset." << std::endl;
+                std::cout << "Insert file does not exist, starting with an empty dataset.\n";
             }
             if (!fs::exists(requestFilename)) {
-                std::cerr << "Request file does not exist, starting with an empty request log." << std::endl;
+                std::cout << "Request file does not exist, starting with an empty request log.\n" ;
             }
         }
     }
@@ -199,7 +199,7 @@ public:
             for(int j = 0; j < insertedData[i].size(); j++){
                 std::cout << insertedData[i][j] << " ";
             }
-        std::cout << std::endl;
+        std::cout << "\n";
     }
 }
 };

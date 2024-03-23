@@ -13,7 +13,7 @@ private:
 
 	void loadProgress() {
 		//Load the last persisted file position from the progress file
-		std::ifstream progressFile(fileProgressName);
+		std::ifstream progressFile(fileProgressName, std::ios::binary);
 		if(progressFile.is_open()){
 			long long tmp;
 			progressFile >> tmp;
@@ -47,13 +47,13 @@ public:
 	std::vector<int> loadBatch() {
 		std::ifstream file(fileName, std::ios::binary);
 		if(!file.is_open()){
-			std::cerr << "Failed to open file: " << fileName << std::endl;
+			std::cerr << "Failed to open file: " << fileName << "\n";
 			return {};
 		}
 		file.seekg(filePosition); // Move to the last processed batch
 
 		if (!file) {
-		    std::cerr << "Failed to seek to position: " << filePosition << std::endl;
+		    std::cerr << "Failed to seek to position: " << filePosition << "\n";
 		    return {};
 		}
 
@@ -68,7 +68,7 @@ public:
 			std::cout << value << " ";
 			linesRead++;
 		}
-		std::cout << std::endl;
+		std::cout << "\n";
 
 		filePosition = file.tellg();
 

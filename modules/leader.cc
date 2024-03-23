@@ -87,7 +87,7 @@ void Leader::initialize()
     data_clone = data;
 
     // Call the function for sending the schedule
-	sendCustomSchedule();
+	sendSchedule();
 
 	finishedWorkers.resize(numWorkers);
 	pingWorkers.resize(numWorkers);
@@ -106,9 +106,9 @@ void Leader::initialize()
 
 void Leader::finish() {
     calcResultFor();
-    std::cout << "Result should be: " << std::endl;
+    std::cout << "Result should be: \n";
     if(data.size() == 1) {
-        std::cout << data[0] << std::endl;
+        std::cout << data[0] << "\n";
     } else {
         printingVector(data);
     }
@@ -119,18 +119,18 @@ void Leader::finish() {
         res += val;
     }
 
-    std::cout << res << std::endl << std::endl;
+    std::cout << res << "\n" << "\n";
 
-    std::cout << "For testing: " << std::endl;
+    std::cout << "For testing: " << "\n";
     std::cout << "Data: {";
     printingVector(data_clone);
-    std::cout << "};" << std::endl;
+    std::cout << "};" << "\n";
     std::cout << "parameters: {";
     printingVector(parameters);
-    std::cout << "};" << std::endl;
+    std::cout << "};" << "\n";
     std::cout << "Schedule: {";
     printingStringVector(schedule);
-    std::cout << "};" << std::endl;
+    std::cout << "};" << "\n";
 
     if(ping_msg->isScheduled()){
         cancelEvent(ping_msg);
@@ -259,7 +259,7 @@ void Leader::sendCustomSchedule()
             std::cout << parameters[j] << " ";
         }
         send(msg, "out", i);
-        std::cout << endl;
+        std::cout << "\n";
     }
 }
 
@@ -385,8 +385,8 @@ void Leader::handleCheckChangeKeyAckMessage(CheckChangeKeyAckMessage *msg){
     ckSent[id] = msg -> getChangeKeySent();
     workerResult[id] = msg -> getPartialRes();
 
-    EV<<"ChangeKeyReceived: "<<counter(ckReceived)<<" ChangeKeySent: "<<counter(ckSent)<<endl;
-    EV<<"Finished: "<<finished<<endl;
+    EV<<"ChangeKeyReceived: "<<counter(ckReceived)<<" ChangeKeySent: "<<counter(ckSent)<<"\n";
+    EV<<"Finished: "<<finished<<"\n";
     if(counter(ckReceived) != counter(ckSent) && finished){
         for(int i = 0; i < numWorkers; i++){
             
@@ -400,8 +400,8 @@ void Leader::handleCheckChangeKeyAckMessage(CheckChangeKeyAckMessage *msg){
             firstTime = false;
             for(int i = 0; i < numWorkers; i++){
                 FinishSimMessage* finishSimMsg = new FinishSimMessage();
-                finishSimMsg -> setWorkerId(id);
-                send(finishSimMsg, "out", id);
+                finishSimMsg -> setWorkerId(i);
+                send(finishSimMsg, "out", i);
                 reallyFinished = true;
             }
         }
@@ -410,7 +410,7 @@ void Leader::handleCheckChangeKeyAckMessage(CheckChangeKeyAckMessage *msg){
 
 void Leader::handlePingMessage(cMessage *msg, int id)
 {
-    EV << "Ping received from worker: " << id << std::endl;
+    EV << "Ping received from worker: " << id << "\n";
     pingWorkers[id] = 1;
 }
 
@@ -420,7 +420,7 @@ void Leader::checkPing()
     {
         if(pingWorkers[i] == 0)
         {
-            EV << "Worker "<< i << " is dead. Sending Restart message" << std::endl;
+            EV << "Worker "<< i << " is dead. Sending Restart message" << "\n";
             RestartMessage* restartMsg = new RestartMessage();
             restartMsg -> setWorkerID(i);
 
@@ -487,8 +487,8 @@ void Leader::sendData(int idDest)
     msg -> setAssigned_id(idDest);
     
     // Generate a random dimension for the array of values
-    int numElements = (rand () % 8) + 1;
-    std::cout << "#elements: " << numElements << std::endl;
+    int numElements = (rand () % 100) + 1;
+    std::cout << "#elements: " << numElements << "\n";
     
     msg -> setDataArraySize(numElements);
     std::cout << "Array: ";
@@ -502,7 +502,7 @@ void Leader::sendData(int idDest)
         // Keep track of data for final check
         data.push_back(value);
     }
-    std::cout << endl << endl;
+    std::cout << "\n" << "\n";
     send(msg, "out", idDest);
 }
 
@@ -517,7 +517,7 @@ void Leader::sendSchedule()
     // Define the possible operations set
     std::vector<std::string> operations = {"add", "sub", "mul", "div", "gt", "lt", "ge", "le", "changekey", "reduce"};
     int op_size = operations.size();
-    std::cout << "There are " << op_size << " operations"<< endl;
+    std::cout << "There are " << op_size << " operations"<< "\n";
 
     for(int i = 0; i < op_size; i++)
     {
@@ -537,7 +537,7 @@ void Leader::sendSchedule()
     lowerBound = 8;
     upperBound = 20;
     scheduleSize = lowerBound + rand() % (upperBound - lowerBound + 1);
-    std::cout << std::endl << "Schedule size: " << scheduleSize << endl;
+    std::cout << "\n" << "Schedule size: " << scheduleSize << "\n";
     maxFilter = numberOfFilters(scheduleSize);
 
     // Instantiate an empty array for the actual schedule and for parameters
@@ -615,7 +615,7 @@ void Leader::sendSchedule()
             std::cout << parameters[j] << " ";
         }
         send(msg, "out", i);
-        std::cout << endl;
+        std::cout << "\n";
     }
 }
 

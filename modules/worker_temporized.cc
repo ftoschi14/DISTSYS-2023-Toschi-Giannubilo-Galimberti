@@ -160,6 +160,25 @@ protected:
 Define_Module(Worker);
 
 void Worker::initialize(){
+	changeKeyCtr = 0;
+	changeKeySent = 0;
+	changeKeyReceived = 0;
+
+	waitingForInsert = false;
+
+	// Current Batch Elaboration information
+	currentScheduleStep = 0;
+
+	// General Elaboration Information
+	finishedLocalElaboration = false;
+	finishedPartialCK = false;
+	checkChangeKeyReceived = false;
+	finishNoticeSent = false;
+
+	// Partial Results
+	tmpReduce = 0;
+	std::vector<int> tmpResult = {};
+
 	batchSize = par("batchSize").intValue();
 	failureProbability = (par("failureProbability").intValue()) / 1000.0;
 	numWorkers = par("numWorkers").intValue();
@@ -171,30 +190,24 @@ void Worker::initialize(){
 
 	nextStepMsg = new NextStepMessage("NextStep");
 	pingResEvent = new PingResMessage("PingRes");
+	unstableMessage = new DataInsertMessage();
+	insertTimeoutMsg = new cMessage("Timeout");
 }
 
 void Worker::finish(){
 	std::cout << "Worker " << workerId << " finished with value: ";
 	if(reduceLast){
-		std::cout << tmpReduce << std::endl;
+		std::cout << tmpReduce << "\n";
 	} 
-	//data.clear();
-	if(waitingForInsert) {
-		delete unstableMessage;
-	}
-
-	if(insertTimeoutMsg != nullptr && insertTimeoutMsg->isScheduled() && waitingForInsert){
-		cancelEvent(insertTimeoutMsg);
-	}
-
+	//data.clear()
 
 	if(failed){
-		std::cout << "Finished, but a worker has failed" << std::endl;
+		std::cout << "Finished, but a worker has failed" << "\n";
 		return;
 	} else {
-		std::cout << "Worker " << workerId << " - Inserted Data Empty? " << insertManager->isEmpty() << std::endl;
+		std::cout << "Worker " << workerId << " - Inserted Data Empty? " << insertManager->isEmpty() << "\n";
 	}
-
+	std::cout<<"After if failed in finish\n";
 	// Data loader instances
 	delete loader;
 	delete insertManager;
@@ -202,12 +215,10 @@ void Worker::finish(){
 	// Event Message holders
 	delete pingResEvent;
 	delete nextStepMsg;
-
-	delete replyPingMsg;
 }
 
 void Worker::handleMessage(cMessage *msg){
-	//std::cout << "Worker " << workerId << " received a message - Scheduled at: " << msg->getArrivalTime() << std::endl;
+	//std::cout << "Worker " << workerId << " received a message - Scheduled at: " << msg->getArrivalTime() << "\n";
 	if(msg == nextStepMsg) {
 		processStep();
 		return;
@@ -241,11 +252,7 @@ void Worker::handleMessage(cMessage *msg){
 			return;
 		}
 
-		if(replyPingMsg == nullptr){
-			replyPingMsg = pingMsg;
-		} else {
-			delete msg;
-		}
+		delete msg;
 
 		if(pingResEvent != nullptr && pingResEvent->isScheduled()){
 			cancelEvent(pingResEvent);
@@ -254,6 +261,7 @@ void Worker::handleMessage(cMessage *msg){
 		// Generate random delay
 		float delay = lognormal(PING_DELAY_AVG, PING_DELAY_STD); // Log-normal to have always positive increments
 		// Schedule response event
+		std::cout<<"Scheduling ping res event\n";
         scheduleAt(simTime() + delay , pingResEvent);
 		return;
 	}
@@ -309,8 +317,10 @@ void Worker::handlePingMessage(cMessage *msg){
 	if(failed) {
 		return;
 	}
-	
-	send(replyPingMsg->dup(), "out", LEADER_PORT);
+	PingMessage *pingMsg = new PingMessage();
+	pingMsg->setWorkerId(workerId);
+	send(pingMsg, "out", LEADER_PORT);
+	std::cout<<"Replying to ping\n";
 	return;
 }
 
@@ -357,7 +367,7 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
 
 void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 	if(failed){
-		EV << "Received DataInsert - dropped" << std::endl;
+		EV << "Received DataInsert - dropped" << "\n";
 		delete msg;
 		return;
 	}
@@ -407,7 +417,7 @@ void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *
 
 void Worker::handleRestartMessage(RestartMessage *msg){
 	if(!failed){
-		std::cout << "Worker " << workerId << " received a RestartMessage, but has not failed: Restarting..." << std::endl;
+		std::cout << "Worker " << workerId << " received a RestartMessage, but has not failed: Restarting..." << "\n";
 		deallocatingMemory();
 	}
 	failed = false;
@@ -465,22 +475,24 @@ void Worker::processStep(){
 
 	if(currentScheduleStep >= schedule.size()) {
 		if(reduceLast) {
+			std::cout<<"Before persisting reduce\n";
 			persistingReduce(tmpReduce);
 		} else {
+			std::cout<<"Before persisting result\n";
 			persistingResult(tmpResult);
 			tmpResult.clear();
 		} 
-
+		std::cout<<"Before persisting counter\n";
 		persistCKCounter();
-
+		std::cout<<"Before loop\n";
 		while(isScheduleEmpty() && (!finishedLocalElaboration || !finishedPartialCK)){
 			loadNextBatch();
 		}
 
-		std::cout << "Worker " << workerId << " - Loaded data:" << std::endl;
-		printScheduledData(data);
+		std::cout << "Worker " << workerId << " - Loaded data:" << "\n";
+		//printScheduledData(data);
 		
-		EV<<"Status - Worker " << workerId << " - FinishedLocal: " << finishedLocalElaboration << " - FinishedCK: " << finishedPartialCK << " - CheckCKReceived: " << checkChangeKeyReceived << std::endl;
+		EV<<"Status - Worker " << workerId << " - FinishedLocal: " << finishedLocalElaboration << " - FinishedCK: " << finishedPartialCK << " - CheckCKReceived: " << checkChangeKeyReceived << "\n";
 		
 		if(finishedLocalElaboration && finishedPartialCK && !finishNoticeSent) {
 			EV<<"\nSENDING FINISHED LOCAL ELABORATION WORKER: "<<workerId<<"\n\n";
@@ -512,13 +524,12 @@ void Worker::processStep(){
 	if(!data[currentScheduleStep].empty()){
 		int value = data[currentScheduleStep].front();
 		data[currentScheduleStep].pop_front();
-		EV << "Worker " << workerId << " - Elaborating: " << value << " - Operation: " << schedule[currentScheduleStep] << std::endl;
 
 		bool result = applyOperation(value);
 
 		if(failed) return;
 
-		EV << "Result: " << value << std::endl;
+		EV << "Result: " << value << "\n";
 
 		/*
 		* 2 Cases in which we add data:
@@ -528,7 +539,9 @@ void Worker::processStep(){
 		if(result){
 			if(currentScheduleStep + 1 < schedule.size()){
 				data[currentScheduleStep + 1].push_back(value);
+				std::cout<<"After push_back: \n";
 			} else if(!reduceLast){
+				std::cout<<"I don't know why i'm here\n";
 				tmpResult.push_back(value);
 			}
 		}
@@ -536,17 +549,20 @@ void Worker::processStep(){
 		if(waitingForInsert) return;
 
 		float delay = calculateDelay(schedule[currentScheduleStep]);
+		EV<<"Scheduling next step\n";
 		scheduleAt(simTime()+delay, nextStepMsg);
+		EV<<"Scheduled next step\n";
 	} else {
 		EV << "Empty map, finished current step\n\n";
-		std::cout << "Worker " << workerId << " finished step " << currentScheduleStep << " - New step data: " << std::endl;
-		printScheduledData(data);
-		std::cout << "\n";
+		std::cout << "Worker " << workerId << " finished step " << currentScheduleStep << " - New step data: \n";
+		//printScheduledData(data);
+		//std::cout << "\n";
 		currentScheduleStep++;
 		if(reduceLast && currentScheduleStep == schedule.size() - 1) {
 			EV << "Entering reduce\n\n";
-			std::cout << "Worker " << workerId << " reducing: ";
+			//std::cout << "Worker " << workerId << " reducing: ";
 			processReduce();
+			//std::cout<<"Returning after process reduce\n";
 			return;
 		}
 		processStep();
@@ -556,15 +572,15 @@ void Worker::processStep(){
 void Worker::processReduce(){
 	int batchRes = reduce({data[currentScheduleStep].begin(), data[currentScheduleStep].end()});
 
-	std::cout << tmpReduce << " + " << batchRes << " = " << (tmpReduce + batchRes) << std::endl;
+	std::cout << tmpReduce << " + " << batchRes << " = " << (tmpReduce + batchRes) << "\n";
 
 	tmpReduce = tmpReduce + batchRes;
 
 	data[currentScheduleStep].clear();
 
-	currentScheduleStep++;
-
 	float delay = calculateDelay(schedule[currentScheduleStep]);
+
+	currentScheduleStep++;
 
 	scheduleAt(simTime()+delay, nextStepMsg);
 }
@@ -576,22 +592,22 @@ void Worker::loadNextBatch(){
 	loader->saveProgress();
 
 	if(localBatch) {
-		std::cout << "Worker " << workerId << " - Loading local:" << std::endl;
+		std::cout << "Worker " << workerId << " - Loading local:\n";
 		std::vector<int> batch = loader->loadBatch();
 		if(batch.empty()){
 			finishedLocalElaboration = true;
 			localBatch = false;
-			//std::cout << "Finished local, switching to ck" << std::endl;
+			//std::cout << "Finished local, switching to ck" << "\n";
 		} else {
         	data[0].insert(data[0].end(), batch.begin(), batch.end());
 		}
 	} else {
-		EV << "Loading CK..." << std::endl;
+		EV << "Loading CK...\n";
 		std::map<int, std::vector<int>> ckBatch = insertManager->getBatch();
 
 		if(ckBatch.empty()){
 			finishedPartialCK = true;
-			EV << "CK data empty" << std::endl;
+			EV << "CK data empty" << "\n";
 		} else {
 			EV << "\n\nCK not empty";
 			for(int i=0; i < schedule.size(); i++) {
@@ -604,6 +620,7 @@ void Worker::loadNextBatch(){
 }
 
 bool Worker::applyOperation(int& value){
+	std::cout<<"Entering apply operation\n";
 	if(failureDetection()){
 		failed = true;
 		std::cout<<"FAILURE DETECTED AT WORKER: "<<workerId<<", deallocating memory\n";
@@ -611,12 +628,13 @@ bool Worker::applyOperation(int& value){
 		return false;
 	}
 
+	
 	const std::string& operation = schedule[currentScheduleStep];
 	const int& parameter = parameters[currentScheduleStep];
 
 	if(operation == "add" || operation == "sub" || operation == "mul" || operation == "div") {
 		int res = map(operation, parameter, value);
-		EV << "Map result: " << res << std::endl;
+		std::cout << "Map result: " << res << "\n";
 		value = res;
 
 		return true;
@@ -624,13 +642,16 @@ bool Worker::applyOperation(int& value){
 		return filter(operation, parameter, value);
 
 	} else if(operation == "changekey") {
+		std::cout<<"Entering changekey\n";
 		int newKey = changeKey(value, changeKeyProbability);
-        if(newKey != -1) {
+		//std::cout<<"New key: "<<newKey<<"\n";
+		if(newKey != -1) {
         	std::cout << "Changing Key: " << workerId << " -> " << newKey << " for value: "<<value<<"\n";
         	sendData(newKey, value, currentScheduleStep + 1); // 'i' == Schedule step
 
         	return false;
         }
+        
         return true;
 	}
 	return false;
@@ -730,7 +751,7 @@ void Worker::loadPartialResults(){
 		ck_file.close();
 	}
 
-	std::cout << "Worker " << workerId << " loaded reduce: " << tmpReduce << " [CRASH RECOVERY]" << std::endl;
+	std::cout << "Worker " << workerId << " loaded reduce: " << tmpReduce << " [CRASH RECOVERY]" << "\n";
 }
 
 bool Worker::failureDetection(){
@@ -743,11 +764,10 @@ bool Worker::failureDetection(){
 }
 
 void Worker::deallocatingMemory(){
-	std::cout << "Worker " << workerId << " failing..." << std::endl;
+	std::cout << "Worker " << workerId << " failing..." << "\n";
 	failed = true;
 
-	std::cout << "\nFailed at: \n";
-	printScheduledData(debugData);
+	//printScheduledData(debugData);
 	std::cout << "\n";
 
 	debugData = data;
@@ -756,10 +776,11 @@ void Worker::deallocatingMemory(){
 	if(waitingForInsert) {
 		delete unstableMessage;
 	}
-
+	std::cout<<"Tra i due if\n";
 	if(insertTimeoutMsg != nullptr && insertTimeoutMsg->isScheduled() && waitingForInsert){
 		cancelEvent(insertTimeoutMsg);
 	}
+	std::cout<<"Dopo il secondo if\n";
 
 	fileName = "";
 	fileProgressName = "";
@@ -877,7 +898,7 @@ void Worker::persistingReduce(int reducedValue){
 	std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
 	std::string fileName = folder + "result.csv";
 
-	//std::cout << "Worker " << workerId << " persisting: " << reducedValue << std::endl;
+	//std::cout << "Worker " << workerId << " persisting: " << reducedValue << "\n";
 
 	std::ofstream result_file(fileName);
 	if(result_file.is_open()){
@@ -912,7 +933,7 @@ void Worker::printingVector(std::vector<int> vector){
     for(int i=0; i<vector.size(); i++){
         std::cout<<vector[i]<<" ";
     }
-    std::cout << std::endl;
+    std::cout << "\n";
 }
 
 void Worker::printScheduledData(std::map<int, std::deque<int>> data){
@@ -923,20 +944,20 @@ void Worker::printScheduledData(std::map<int, std::deque<int>> data){
 			std::cout << data[i][j] << " ";
 		}
 
-		if(data[i].size() > 0) std::cout << std::endl;
+		if(data[i].size() > 0) std::cout << "\n";
 	}
 }
 
 void Worker::printDataInsertMessage(DataInsertMessage* msg, bool recv){
 	if(recv){
 		std::cout << "Worker " << workerId << " received DataInsert:\n";
-		std::cout << "Sender: " << getInboundWorkerID(msg->getArrivalGate()->getIndex()) << std::endl;
+		std::cout << "Sender: " << getInboundWorkerID(msg->getArrivalGate()->getIndex()) << "\n";
 	}
-	std::cout << "Dest ID: " << msg->getDestID() << std::endl;
-	std::cout << "Req ID: " << msg->getReqID() << std::endl;
-	std::cout << "Data: " << msg->getData() << std::endl;
-	std::cout << "Schedule step: " << msg->getScheduleStep() << std::endl;
-	std::cout << "Ack: " << msg->getAck() << std::endl;
+	std::cout << "Dest ID: " << msg->getDestID() << "\n";
+	std::cout << "Req ID: " << msg->getReqID() << "\n";
+	std::cout << "Data: " << msg->getData() << "\n";
+	std::cout << "Schedule step: " << msg->getScheduleStep() << "\n";
+	std::cout << "Ack: " << msg->getAck() << "\n";
 	return;
 }
 
