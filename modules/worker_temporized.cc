@@ -367,6 +367,10 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 		cancelEvent(insertTimeoutMsg);
 		delete unstableMessage;
 
+		if(nextStepMsg->isScheduled()) {
+			cancelEvent(nextStepMsg);
+		}
+
 		scheduleAt(simTime(), nextStepMsg);
 		waitingForInsert = false;
 		changeKeySent++;
@@ -822,12 +826,14 @@ void Worker::sendData(int newKey, int value, int scheduleStep){
 	//add req to queue and wait for ACK, set timeout
 	unstableMessage = insertMsg;
 
-	cMessage* timeoutMsg = new cMessage(("Timeout-" + std::to_string(changeKeyCtr)).c_str());
-	timeoutMsg->setContextPointer(new int(changeKeyCtr));
+	if(insertTimeoutMsg == nullptr) {
+		cMessage* timeoutMsg = new cMessage(("Timeout-" + std::to_string(changeKeyCtr)).c_str());
+		timeoutMsg->setContextPointer(new int(changeKeyCtr));
+		insertTimeoutMsg = timeoutMsg;
+	}
 
-	scheduleAt(simTime() + insertTimeout, timeoutMsg);
+	scheduleAt(simTime() + insertTimeout, insertTimeoutMsg);
 
-	insertTimeoutMsg = timeoutMsg;
 	changeKeyCtr++;
 
 	waitingForInsert = true;
