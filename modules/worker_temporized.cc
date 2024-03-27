@@ -147,6 +147,7 @@ protected:
 	// Persisting functions
 	void persistingResult(std::vector<int> result);
 	void persistingReduce(int reduce);
+	void persistCKSentReceived();
 	void persistCKCounter();
 
 	// Other utils
@@ -380,7 +381,7 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 		scheduleAt(simTime(), nextStepMsg);
 		waitingForInsert = false;
 		changeKeySent++;
-		persistCKCounter();
+		persistCKSentReceived();
 	} else {
 		// Insert new data point into data vector
 		int gateIndex = msg->getArrivalGate()->getIndex();
@@ -396,7 +397,7 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 
 		send(insertMsg, "out", gateIndex);
 		changeKeyReceived++;
-		persistCKCounter();
+		persistCKSentReceived();
 	}
 	delete msg;
 }
@@ -480,6 +481,7 @@ void Worker::processStep(){
 			tmpResult.clear();
 		} 
 		std::cout<<"Before persisting counter\n";
+		persistCKCounter();
 		while(isScheduleEmpty() && (!finishedLocalElaboration || !finishedPartialCK)){
 			loadNextBatch();
 		}
@@ -741,7 +743,7 @@ bool Worker::failureDetection(){
 
 void Worker::loadChangeKeyData(){
 
-	std::string ck_filename = "Data/Worker_" + std::to_string(workerId) + "/Data_CK.csv";
+	std::string ck_filename = "Data/Worker_" + std::to_string(workerId) + "/CK_sent_received.csv";
 	std::ifstream ck_file(ck_filename, std::ios::binary);
 	std::string line;
 	
@@ -756,15 +758,31 @@ void Worker::loadChangeKeyData(){
 				std::cout<<"Part: "<<part<<"\n";
 			}
 
-			if (parts.size() == 3) {
-				changeKeyCtr = parts[0];
-				changeKeySent = parts[1];
-				changeKeyReceived = parts[2];
+			if (parts.size() == 2) {
+				changeKeySent = parts[0];
+				changeKeyReceived = parts[1];
 				std::cout<<"Worker "<<workerId<<" -> LOADING: ChangeKeyCtr: "<<changeKeyCtr<<", changeKeySent: "<<changeKeySent<<", changeKeyReceived: "<<changeKeyReceived<<"\n";
 			}else{
 				std::cout<<"Error in loading change key data\n";
 			}
 		}
+	}
+	ck_file.close();
+
+	std::string ck_counter = "Data/Worker_" + std::to_string(workerId) + "/CK_counter.csv";
+	std::ifstream ck_counterFile(ck_counter, std::ios::binary);
+	std::string counterLine;
+
+	if(ck_counterFile.is_open()){
+		if (std::getline(ck_counterFile, counterLine)) {
+			std::istringstream iss(counterLine);
+
+			int savedCKCtr;
+			if (iss >> savedCKCtr) {
+				changeKeyCtr = savedCKCtr; 
+			}
+		}
+		ck_counterFile.close();
 	}
 }
 
@@ -894,6 +912,7 @@ void Worker::persistingResult(std::vector<int> result) {
     }
 
     result_file.close();
+	
 }
 
 void Worker::persistingReduce(int reducedValue){
@@ -917,13 +936,29 @@ void Worker::persistingReduce(int reducedValue){
 
 void Worker::persistCKCounter(){
 	std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
-	std::string fileName = folder + "Data_CK.csv";
+	std::string fileName = folder + "CK_counter.csv";
 
 	std::ofstream result_file(fileName);
 	if(result_file.is_open()){
 		EV << "Opened CK file\n";
-		std::cout<<"Worker "<<workerId<<" -> PERSISTING: ChangeKeyCtr: "<<changeKeyCtr<<", changeKeySent: "<<changeKeySent<<", changeKeyReceived: "<<changeKeyReceived<<"\n";
-		result_file << changeKeyCtr<<","<<changeKeySent<<","<<changeKeyReceived;
+		result_file << changeKeyCtr;
+
+		result_file.close();
+		
+	}else{
+		EV << "Can't open file: " << fileName << "\n";
+	}
+}
+
+void Worker::persistCKSentReceived(){
+	std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
+	std::string fileName = folder + "CK_sent_received.csv";
+
+	std::ofstream result_file(fileName);
+	if(result_file.is_open()){
+		EV << "Opened CK file\n";
+		std::cout<<"Worker "<<workerId<<" -> PERSISTING: changeKeySent: "<<changeKeySent<<", changeKeyReceived: "<<changeKeyReceived<<"\n";
+		result_file<<changeKeySent<<","<<changeKeyReceived;
 
 		result_file.close();
 		
