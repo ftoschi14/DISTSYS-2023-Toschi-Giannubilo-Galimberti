@@ -49,7 +49,6 @@ class Worker : public cSimpleModule{
 private:
 	// Data structures to hold batch, and insertions in progress
 	std::map<int, std::deque<int>> data;
-	std::map<int, std::deque<int>> debugData;
 
 	DataInsertMessage* unstableMessage;
 	cMessage* insertTimeoutMsg;
@@ -73,8 +72,8 @@ private:
 	float insertTimeout;
 
 	// For ChangeKey protocol
-	int changeKeySent;
-	int changeKeyReceived;
+	int changeKeySent; //to be saved
+	int changeKeyReceived; //to be saved
 	bool waitingForInsert;
 
 	// Current Batch Elaboration information
@@ -86,7 +85,7 @@ private:
 	// General Elaboration Information
 	bool finishedLocalElaboration;
 	bool finishedPartialCK;
-	bool checkChangeKeyReceived;
+	bool checkChangeKeyReceived; 
 	bool finishNoticeSent;
 	std::vector<std::string> schedule;
 	std::vector<int> parameters;
@@ -102,7 +101,6 @@ private:
 	// Ping reply holder
 	PingMessage *replyPingMsg;
 
-	SimTime previousCrash;
 protected:
 	virtual void initialize() override;
 	virtual void finish() override;
@@ -135,6 +133,7 @@ protected:
 	//Crash related functions
 	void initializeDataModules();
 	void loadPartialResults();
+	void loadChangeKeyData();
 	bool failureDetection();
 	void deallocatingMemory();
 
@@ -424,7 +423,6 @@ void Worker::handleRestartMessage(RestartMessage *msg){
 	workerId = msg->getWorkerID();
 	batchSize = par("batchSize").intValue();
 	numWorkers = par("numWorkers").intValue();
-
 	initializeDataModules();
 	
 	// Re-Initialized worker and data modules, now copy schedule and re-start processing
@@ -440,6 +438,8 @@ void Worker::handleRestartMessage(RestartMessage *msg){
     // Load previous partial result
 
 	if(reduceLast) loadPartialResults();
+
+	loadChangeKeyData();
 
 	loadNextBatch();
 
@@ -735,22 +735,7 @@ void Worker::loadPartialResults(){
 		}
 		res_file.close();
 	}
-
-	std::string ck_filename = "Data/Worker_" + std::to_string(workerId) + "/Data_CK.csv";
-	std::ifstream ck_file(ck_filename, std::ios::binary);
-
-	if(ck_file.is_open()){
-		if (std::getline(ck_file, line)) {
-			std::istringstream iss(line);
-
-			int savedResult;
-			if (iss >> savedResult) {
-				changeKeyCtr = savedResult; 
-			}
-		}
-		ck_file.close();
-	}
-
+	
 	std::cout << "Worker " << workerId << " loaded reduce: " << tmpReduce << " [CRASH RECOVERY]" << "\n";
 }
 
@@ -763,6 +748,35 @@ bool Worker::failureDetection(){
 
 }
 
+void Worker::loadChangeKeyData(){
+
+	std::string ck_filename = "Data/Worker_" + std::to_string(workerId) + "/Data_CK.csv";
+	std::ifstream ck_file(ck_filename, std::ios::binary);
+	std::string line;
+	
+	if(ck_file.is_open()){
+		while (std::getline(ck_file, line)) {
+			std::istringstream iss(line);
+			std::string part;
+			std::vector<int> parts;
+
+			while (std::getline(iss, part, ',')) {
+				parts.push_back(std::stoi(part));
+				std::cout<<"Part: "<<part<<"\n";
+			}
+
+			if (parts.size() == 3) {
+				changeKeyCtr = parts[0];
+				changeKeySent = parts[1];
+				changeKeyReceived = parts[2];
+				std::cout<<"LOADING: ChangeKeyCtr: "<<changeKeyCtr<<", changeKeySent: "<<changeKeySent<<", changeKeyReceived: "<<changeKeyReceived<<"\n";
+			}else{
+				std::cout<<"Error in loading change key data\n";
+			}
+		}
+	}
+}
+
 void Worker::deallocatingMemory(){
 	std::cout << "Worker " << workerId << " failing..." << "\n";
 	failed = true;
@@ -770,7 +784,6 @@ void Worker::deallocatingMemory(){
 	//printScheduledData(debugData);
 	std::cout << "\n";
 
-	debugData = data;
 	data.clear();
 
 	if(waitingForInsert) {
@@ -920,7 +933,8 @@ void Worker::persistCKCounter(){
 	std::ofstream result_file(fileName);
 	if(result_file.is_open()){
 		EV << "Opened CK file\n";
-		result_file << changeKeyCtr;
+		std::cout<<"PERSISTING: ChangeKeyCtr: "<<changeKeyCtr<<", changeKeySent: "<<changeKeySent<<", changeKeyReceived: "<<changeKeyReceived<<"\n";
+		result_file << changeKeyCtr<<","<<changeKeySent<<","<<changeKeyReceived;
 
 		result_file.close();
 		
