@@ -206,7 +206,6 @@ void Worker::finish(){
 	} else {
 		std::cout << "Worker " << workerId << " - Inserted Data Empty? " << insertManager->isEmpty() << "\n";
 	}
-	std::cout<<"After if failed in finish\n";
 	// Data loader instances
 	delete loader;
 	delete insertManager;
@@ -260,7 +259,6 @@ void Worker::handleMessage(cMessage *msg){
 		// Generate random delay
 		float delay = lognormal(PING_DELAY_AVG, PING_DELAY_STD); // Log-normal to have always positive increments
 		// Schedule response event
-		std::cout<<"Scheduling ping res event\n";
         scheduleAt(simTime() + delay , pingResEvent);
 		return;
 	}
@@ -319,7 +317,6 @@ void Worker::handlePingMessage(cMessage *msg){
 	PingMessage *pingMsg = new PingMessage();
 	pingMsg->setWorkerId(workerId);
 	send(pingMsg, "out", LEADER_PORT);
-	std::cout<<"Replying to ping\n";
 	return;
 }
 
@@ -383,6 +380,7 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 		scheduleAt(simTime(), nextStepMsg);
 		waitingForInsert = false;
 		changeKeySent++;
+		persistCKCounter();
 	} else {
 		// Insert new data point into data vector
 		int gateIndex = msg->getArrivalGate()->getIndex();
@@ -398,6 +396,7 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 
 		send(insertMsg, "out", gateIndex);
 		changeKeyReceived++;
+		persistCKCounter();
 	}
 	delete msg;
 }
@@ -475,16 +474,12 @@ void Worker::processStep(){
 
 	if(currentScheduleStep >= schedule.size()) {
 		if(reduceLast) {
-			std::cout<<"Before persisting reduce\n";
 			persistingReduce(tmpReduce);
 		} else {
-			std::cout<<"Before persisting result\n";
 			persistingResult(tmpResult);
 			tmpResult.clear();
 		} 
 		std::cout<<"Before persisting counter\n";
-		persistCKCounter();
-		std::cout<<"Before loop\n";
 		while(isScheduleEmpty() && (!finishedLocalElaboration || !finishedPartialCK)){
 			loadNextBatch();
 		}
@@ -539,9 +534,7 @@ void Worker::processStep(){
 		if(result){
 			if(currentScheduleStep + 1 < schedule.size()){
 				data[currentScheduleStep + 1].push_back(value);
-				std::cout<<"After push_back: \n";
 			} else if(!reduceLast){
-				std::cout<<"I don't know why i'm here\n";
 				tmpResult.push_back(value);
 			}
 		}
@@ -620,7 +613,6 @@ void Worker::loadNextBatch(){
 }
 
 bool Worker::applyOperation(int& value){
-	std::cout<<"Entering apply operation\n";
 	if(failureDetection()){
 		failed = true;
 		std::cout<<"FAILURE DETECTED AT WORKER: "<<workerId<<", deallocating memory\n";
@@ -642,7 +634,6 @@ bool Worker::applyOperation(int& value){
 		return filter(operation, parameter, value);
 
 	} else if(operation == "changekey") {
-		std::cout<<"Entering changekey\n";
 		int newKey = changeKey(value, changeKeyProbability);
 		//std::cout<<"New key: "<<newKey<<"\n";
 		if(newKey != -1) {
@@ -769,7 +760,7 @@ void Worker::loadChangeKeyData(){
 				changeKeyCtr = parts[0];
 				changeKeySent = parts[1];
 				changeKeyReceived = parts[2];
-				std::cout<<"LOADING: ChangeKeyCtr: "<<changeKeyCtr<<", changeKeySent: "<<changeKeySent<<", changeKeyReceived: "<<changeKeyReceived<<"\n";
+				std::cout<<"Worker "<<workerId<<" -> LOADING: ChangeKeyCtr: "<<changeKeyCtr<<", changeKeySent: "<<changeKeySent<<", changeKeyReceived: "<<changeKeyReceived<<"\n";
 			}else{
 				std::cout<<"Error in loading change key data\n";
 			}
@@ -789,11 +780,9 @@ void Worker::deallocatingMemory(){
 	if(waitingForInsert) {
 		delete unstableMessage;
 	}
-	std::cout<<"Tra i due if\n";
 	if(insertTimeoutMsg != nullptr && insertTimeoutMsg->isScheduled() && waitingForInsert){
 		cancelEvent(insertTimeoutMsg);
 	}
-	std::cout<<"Dopo il secondo if\n";
 
 	fileName = "";
 	fileProgressName = "";
@@ -933,7 +922,7 @@ void Worker::persistCKCounter(){
 	std::ofstream result_file(fileName);
 	if(result_file.is_open()){
 		EV << "Opened CK file\n";
-		std::cout<<"PERSISTING: ChangeKeyCtr: "<<changeKeyCtr<<", changeKeySent: "<<changeKeySent<<", changeKeyReceived: "<<changeKeyReceived<<"\n";
+		std::cout<<"Worker "<<workerId<<" -> PERSISTING: ChangeKeyCtr: "<<changeKeyCtr<<", changeKeySent: "<<changeKeySent<<", changeKeyReceived: "<<changeKeyReceived<<"\n";
 		result_file << changeKeyCtr<<","<<changeKeySent<<","<<changeKeyReceived;
 
 		result_file.close();
