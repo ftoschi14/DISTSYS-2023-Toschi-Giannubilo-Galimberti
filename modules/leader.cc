@@ -39,7 +39,7 @@ class Leader : public cSimpleModule
         cMessage *check_msg;
 
         std::vector<int> data;
-        std::vector<int> data_clone;
+        std::vector<std::vector<int>> data_clone;
     protected:
         virtual void initialize() override;
         virtual void finish() override;
@@ -84,8 +84,6 @@ void Leader::initialize()
 	    sendData(i);
 	}
 
-    data_clone = data;
-
     // Call the function for sending the schedule
 	sendSchedule();
 
@@ -112,7 +110,7 @@ void Leader::finish() {
     } else {
         printingVector(data);
     }
-    std::cout << "And from the workers: ";
+    std::cout << "And from the workers: \n";
 
     int res = 0;
     for(int val : workerResult) {
@@ -122,8 +120,13 @@ void Leader::finish() {
     std::cout << res << "\n" << "\n";
 
     std::cout << "For testing: " << "\n";
-    std::cout << "Data: {";
-    printingVector(data_clone);
+    std::cout << "Data: {\n";
+
+    for(const auto& row : data_clone) {
+        std::cout <<"{";
+        printingVector(row);
+        std::cout << "}\n";
+    }
     std::cout << "};" << "\n";
     std::cout << "parameters: {";
     printingVector(parameters);
@@ -483,11 +486,11 @@ void Leader::removeWorkersDirectory()
 void Leader::sendData(int idDest)
 {
     SetupMessage *msg = new SetupMessage();
-
+    std::vector<int> currentData;
     msg -> setAssigned_id(idDest);
     
     // Generate a random dimension for the array of values
-    int numElements = (rand () % 100) + 1;
+    int numElements = 20 + rand() % (40 - 20 + 1);
     std::cout << "#elements: " << numElements << "\n";
     
     msg -> setDataArraySize(numElements);
@@ -501,7 +504,9 @@ void Leader::sendData(int idDest)
 
         // Keep track of data for final check
         data.push_back(value);
+        currentData.push_back(value);
     }
+    data_clone.push_back(currentData);
     std::cout << "\n" << "\n";
     send(msg, "out", idDest);
 }
@@ -633,13 +638,21 @@ int Leader::numberOfFilters(int scheduleSize)
 
 void Leader::printingVector(std::vector<int> vector){
     for(int i=0; i<vector.size(); i++){
-        std::cout<<vector[i]<<", ";
+        if(i<vector.size()-1){
+            std::cout<<vector[i]<<", ";
+        }else{
+            std::cout<<vector[i];
+        }
     }
 }
 
 void Leader::printingStringVector(std::vector<std::string> vector){
     for(int i=0; i<vector.size(); i++){
-        std::cout<< "\"" <<vector[i] << "\"" <<", ";
+        if(i<vector.size()-1){
+            std::cout<< "\"" <<vector[i] << "\"" <<", ";
+        }else{
+            std::cout<< "\"" <<vector[i] << "\"";
+        }
     }
 }
 
