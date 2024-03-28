@@ -52,6 +52,7 @@ class Leader : public cSimpleModule
         void createWorkersDirectory();
         void removeWorkersDirectory();
         void sendData(int id_dest);
+        void sendCustomData();
         void sendSchedule();
         void sendCustomSchedule();
         int numberOfFilters(int scheduleSize);
@@ -238,6 +239,35 @@ void Leader::calcResult() {
         }
         // 'changekey' operation is ignored as per instructions.
     }
+}
+
+void Leader::sendCustomData(){
+    std::vector<int> data_1 = {18, 78, 25, 35, 75, 5, 53, 21, 36, 100, 81, 78, 59, 51, 57, 60, 32, 64, 100, 48, 46, 64, 28, 52, 70, 11, 41, 33, 3, 57, 63};
+    std::vector<int> data_2 = {66, 42, 21, 50, 2, 17, 26, 33, 88, 52, 25, 48, 37, 75, 95, 10, 58, 95, 56, 64, 27, 10, 42, 87, 29, 20, 17, 58, 20, 90, 100, 32, 45, 60};
+    
+    data = {18, 78, 25, 35, 75, 5, 53, 21, 36, 100, 81, 78, 59, 51, 57, 60, 32, 64, 100, 48, 46, 64, 28, 52, 70, 11, 41, 33, 3, 57, 63, 66, 42, 21, 50, 2, 17, 26, 33, 88, 52, 25, 48, 37, 75, 95, 10, 58, 95, 56, 64, 27, 10, 42, 87, 29, 20, 17, 58, 20, 90, 100, 32, 45, 60};
+
+    // Generate a random dimension for the array of values
+    int numElements_1 = data_1.size();
+    int numElements_2 = data_2.size();
+
+    SetupMessage *msg_1 = new SetupMessage();
+    msg_1 -> setAssigned_id(0);
+    msg_1 -> setDataArraySize(numElements_1);
+    for(int j = 0; j < numElements_1; j++)
+    {
+        msg_1 -> setData(j, data_1[j]);
+    }
+    send(msg_1, "out", 0);
+
+    SetupMessage *msg_2 = new SetupMessage();
+    msg_2 -> setAssigned_id(1);
+    msg_2 -> setDataArraySize(numElements_2);
+    for(int j = 0; j < numElements_2; j++)
+    {
+        msg_2 -> setData(j, data_2[j]);
+    }
+    send(msg_2, "out", 1);
 }
 
 void Leader::sendCustomSchedule()
