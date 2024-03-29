@@ -403,15 +403,17 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 }
 
 void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg){
-	if(nextStepMsg != nullptr && nextStepMsg->isScheduled()) {
-		cancelEvent(nextStepMsg);
-	}
-
-	float delay = lognormal(FINISH_EXEC_DELAY_AVG, FINISH_EXEC_DELAY_STD);
-	scheduleAt(simTime() + delay , nextStepMsg);
-
 	checkChangeKeyReceived = true;
 	finishedPartialCK = false;
+
+	if(waitingForInsert && insertTimeoutMsg != nullptr && insertTimeoutMsg->isScheduled()) return;
+
+	if(nextStepMsg != nullptr && nextStepMsg->isScheduled()) {
+	cancelEvent(nextStepMsg);
+	}
+	
+	float delay = lognormal(FINISH_EXEC_DELAY_AVG, FINISH_EXEC_DELAY_STD);
+	scheduleAt(simTime() + delay , nextStepMsg);
 }
 
 void Worker::handleRestartMessage(RestartMessage *msg){
@@ -440,7 +442,16 @@ void Worker::handleRestartMessage(RestartMessage *msg){
 	if(reduceLast) loadPartialResults();
 
 	loadChangeKeyData();
+	/*
+	Adding a integer when saving the change key counter (1 for local data, 0 for change key data) in this way when the changeKeyData are loaded can be retrieved 
+	which batch has to be loaded to continue the elaboration
 
+	if(changeKeyCtr == 1) localBatch = true;
+	else localBatch = false;
+
+	In this way is differentiated the load next batch operation and it doesn't restart always from the change key batch because when restarting the localBatch is 
+	always the opposite
+	*/
 	loadNextBatch();
 
 	if(nextStepMsg != nullptr && nextStepMsg->isScheduled()) {
@@ -638,12 +649,13 @@ bool Worker::applyOperation(int& value){
 	} else if(operation == "changekey") {
 		int newKey = changeKey(value, changeKeyProbability);
 		//std::cout<<"New key: "<<newKey<<"\n";
-		if(newKey != -1) {
+		/*if(newKey != -1) {
         	std::cout << "Changing Key: " << workerId << " -> " << newKey << " for value: "<<value<<"\n";
         	sendData(newKey, value, currentScheduleStep + 1); // 'i' == Schedule step
 
         	return false;
-        }
+        }*/
+		
         
         return true;
 	}
@@ -761,7 +773,7 @@ void Worker::loadChangeKeyData(){
 			if (parts.size() == 2) {
 				changeKeySent = parts[0];
 				changeKeyReceived = parts[1];
-				std::cout<<"Worker "<<workerId<<" -> LOADING: ChangeKeyCtr: "<<changeKeyCtr<<", changeKeySent: "<<changeKeySent<<", changeKeyReceived: "<<changeKeyReceived<<"\n";
+				std::cout<<"Worker "<<workerId<<" -> LOADING: changeKeySent: "<<changeKeySent<<", changeKeyReceived: "<<changeKeyReceived<<"\n";
 			}else{
 				std::cout<<"Error in loading change key data\n";
 			}
@@ -774,16 +786,25 @@ void Worker::loadChangeKeyData(){
 	std::string counterLine;
 
 	if(ck_counterFile.is_open()){
-		if (std::getline(ck_counterFile, counterLine)) {
+		while(std::getline(ck_counterFile, counterLine)){
 			std::istringstream iss(counterLine);
+			std::string part;
+			std::vector<int> parts;
 
-			int savedCKCtr;
-			if (iss >> savedCKCtr) {
-				changeKeyCtr = savedCKCtr; 
+			while(std::getline(iss, part, ',')){
+				parts.push_back(std::stoi(part));
+			}
+
+			if(parts.size() == 2){
+				changeKeyCtr = parts[0];
+				localBatch = parts[1] == 1 ? true : false;
+				std::cout<<"Worker "<<workerId<<" -> LOADING: ChangeKeyCtr: "<<changeKeyCtr<<", localBatch: "<<localBatch<<"\n";
+			}else{
+				std::cout<<"Error in loading change key counter\n";
 			}
 		}
-		ck_counterFile.close();
 	}
+	ck_counterFile.close();
 }
 
 void Worker::deallocatingMemory(){
@@ -824,6 +845,11 @@ void Worker::deallocatingMemory(){
 	finishedLocalElaboration = false;
 	finishedPartialCK = false;
 	waitingForInsert = false;
+
+	// ChangeKey protocol
+	changeKeySent = 0;
+	changeKeyReceived = 0;
+
 	//checkChangeKeyReceived = false;
 	//finishNoticeSent = false;
 
@@ -938,10 +964,13 @@ void Worker::persistCKCounter(){
 	std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
 	std::string fileName = folder + "CK_counter.csv";
 
+	int batchType = localBatch ? 1 : 0;
+
 	std::ofstream result_file(fileName);
 	if(result_file.is_open()){
 		EV << "Opened CK file\n";
-		result_file << changeKeyCtr;
+		std::cout<<"Worker "<<workerId<<" -> PERSISTING: changeKeyCtr: "<<changeKeyCtr<<", localBatch: "<<localBatch<<", batchType: "<<batchType<<"\n";
+		result_file<<changeKeyCtr<<","<<batchType;
 
 		result_file.close();
 		

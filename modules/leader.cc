@@ -40,6 +40,7 @@ class Leader : public cSimpleModule
 
         std::vector<int> data;
         std::vector<std::vector<int>> data_clone;
+        std::vector<std::vector<int>> dataMatrix;
     protected:
         virtual void initialize() override;
         virtual void finish() override;
@@ -77,16 +78,19 @@ void Leader::initialize()
     {
         finishedWorkers.push_back(0);
     }
-
-	for(int i = 0; i < numWorkers; i++)
+    /*for(int i = 0; i < numWorkers; i++)
 	{
         srand((unsigned) time(NULL) + i);
         // Call the function for sending the data
 	    sendData(i);
-	}
+	}*/
+	
+    sendCustomData();
 
     // Call the function for sending the schedule
-	sendSchedule();
+	//sendSchedule();
+    
+    sendCustomSchedule();
 
 	finishedWorkers.resize(numWorkers);
 	pingWorkers.resize(numWorkers);
@@ -123,7 +127,7 @@ void Leader::finish() {
     std::cout << "For testing: " << "\n";
     std::cout << "Data: {\n";
 
-    for(const auto& row : data_clone) {
+    for(const auto& row : dataMatrix) {
         std::cout <<"{";
         printingVector(row);
         std::cout << "}\n";
@@ -240,8 +244,7 @@ void Leader::calcResult() {
         // 'changekey' operation is ignored as per instructions.
     }
 }
-
-void Leader::sendCustomData(){
+/*void Leader::sendCustomData(){
     std::vector<int> data_1 = {18, 78, 25, 35, 75, 5, 53, 21, 36, 100, 81, 78, 59, 51, 57, 60, 32, 64, 100, 48, 46, 64, 28, 52, 70, 11, 41, 33, 3, 57, 63};
     std::vector<int> data_2 = {66, 42, 21, 50, 2, 17, 26, 33, 88, 52, 25, 48, 37, 75, 95, 10, 58, 95, 56, 64, 27, 10, 42, 87, 29, 20, 17, 58, 20, 90, 100, 32, 45, 60};
     
@@ -268,13 +271,40 @@ void Leader::sendCustomData(){
         msg_2 -> setData(j, data_2[j]);
     }
     send(msg_2, "out", 1);
-}
+}*/
 
+void Leader::sendCustomData(){
+    dataMatrix = {
+{69, 44, 17, 92, 39, 97, 9, 85, 58, 48, 1, 13, 48, 78, 60, 91, 14, 76, 5, 62, 32, 59, 9, 18, 82, 1, 32, 5, 22, 32, 89, 19, 99, 33},
+{18, 40, 12, 38, 98, 10, 82, 29, 10, 100, 45, 84, 94, 70, 30, 41, 71, 7, 61, 77, 13, 74, 24, 53, 41, 41, 40, 98, 39, 65, 58, 83, 18, 95, 72, 81, 73, 97},
+{66, 36, 8, 53, 24, 54, 23, 41, 62, 52, 89, 23, 72, 94, 68, 59, 96, 38, 86, 93},
+{47, 100, 71, 67, 51, 67, 96, 84, 81, 4, 33, 94, 19, 18, 38, 9, 54, 68, 43, 40, 7, 36, 53},
+};
+
+    for(int i=0; i<dataMatrix.size(); i++){
+        for(int j=0; j<dataMatrix[i].size(); j++){
+            data.push_back(dataMatrix[i][j]);
+        }
+    }
+
+    for(int i = 0; i < numWorkers; i++)
+    {
+        SetupMessage *msg = new SetupMessage();
+        msg -> setAssigned_id(i);
+        msg -> setDataArraySize(dataMatrix[i].size());
+        for(int j = 0; j < dataMatrix[i].size(); j++)
+        {
+            msg -> setData(j, dataMatrix[i][j]);
+        }
+        send(msg, "out", i);
+    }
+}
 void Leader::sendCustomSchedule()
 {
-    scheduleSize = 6;
-    schedule = {"gt", "changekey", "add", "changekey", "add", "reduce"};
-    parameters = {30,0,2,0,2,0};
+    parameters = {30, 0, 2, 0, 0, 5, 0, 2, 0, 1, 2, 0, 0};
+    schedule = {"gt", "changekey", "sub", "changekey", "changekey", "sub", "changekey", "add", "changekey", "mul", "add", "changekey", "reduce"};
+
+    scheduleSize = schedule.size();
     bool reduceFound = true;
     for(int i = 0; i < numWorkers; i++)
     {
@@ -342,53 +372,6 @@ void Leader::handleMessage(cMessage *msg)
     }
 
 }
-
-/*void Leader::handleFinishElaborationMessage(cMessage *msg, bool local, int id)
-{   
-    finishedWorkers[id] = 1;
-    delete msg;
-    finished = true;
-
-    for(int i = 0; i < numWorkers; i++)
-    {
-        if(finishedWorkers[i] == 0)
-        {
-            finished = false;
-            break;
-        }
-    }
-    if(finished)
-    {
-        if(local)
-        {
-            EV<<"\nEVERYONE FINISHED ITS LOCAL ELABORATION\n";
-        }
-            else
-            {
-                EV << "Application terminated at Leader side\n";
-            }
-        for(int i = 0; i < numWorkers; i++)
-        {
-            if(local)
-            {
-                FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
-                finishLocalMsg -> setWorkerId(i);
-                
-                send(finishLocalMsg, "out", i);
-                for(int i = 0; i < numWorkers; i++)
-                {
-                    finishedWorkers[i] = 0;
-                }
-            }
-                else
-                {
-                    FinishSimMessage* finishSimMsg = new FinishSimMessage();
-                    finishSimMsg -> setWorkerId(i);
-                    send(finishSimMsg, "out", i);
-                }
-        }
-    }
-}*/
 
 void Leader::handleFinishElaborationMessage(FinishLocalElaborationMessage *msg){
     int id = msg -> getWorkerId();
@@ -520,7 +503,9 @@ void Leader::sendData(int idDest)
     msg -> setAssigned_id(idDest);
     
     // Generate a random dimension for the array of values
-    int numElements = 20 + rand() % (40 - 20 + 1);
+    int minimum = 20;
+    int maximum = 25;
+    int numElements = minimum + rand() % (maximum - minimum + 1);
     std::cout << "#elements: " << numElements << "\n";
     
     msg -> setDataArraySize(numElements);
