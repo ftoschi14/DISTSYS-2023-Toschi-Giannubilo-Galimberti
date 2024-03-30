@@ -24,11 +24,12 @@ class Leader : public cSimpleModule
         bool firstTime = true;
         bool finished;
         bool reallyFinished;
+        bool reduceLast;
         int numWorkers;
         int scheduleSize;
         std::vector<int> ckReceived;
         std::vector<int> ckSent;
-        std::vector<int> workerResult;
+        std::vector<std::vector<int>> workerResult;
         simtime_t interval;
         simtime_t timeout;
         std::vector<std::string> schedule;
@@ -81,15 +82,15 @@ void Leader::initialize()
         ckChecked.push_back(0);
         
     }
-    /* for(int i = 0; i < numWorkers; i++)
+    for(int i = 0; i < numWorkers; i++)
 	{
         srand((unsigned) time(NULL) + i);
         // Call the function for sending the data
 	    sendData(i);
-	}*/
+	}
    
 	
-    sendCustomData();
+    //sendCustomData();
 
     // Call the function for sending the schedule
 	//sendSchedule();
@@ -102,6 +103,13 @@ void Leader::initialize()
     ckSent.resize(numWorkers);
     ckReceived.resize(numWorkers);
 
+    reduceLast = (schedule[schedule.size() - 1] == "reduce");
+    if(reduceLast) {
+        for(int i = 0; i < numWorkers; i++) {
+            workerResult[i].resize(1);
+        }
+    }
+
 	interval = 2.5;
 	ping_msg = new cMessage("sendPing");
 	scheduleAt(simTime() + interval, ping_msg);
@@ -113,20 +121,56 @@ void Leader::initialize()
 
 void Leader::finish() {
     calcResultFor();
+
     std::cout << "Result should be: \n";
-    if(data.size() == 1) {
+    if(reduceLast) {
         std::cout << data[0] << "\n";
     } else {
+        std::sort(std::begin(data), std::end(data));
         printingVector(data);
     }
-    std::cout << "And from the workers: \n";
+    std::cout << "\nAnd from the workers: \n";
 
-    int res = 0;
-    for(int val : workerResult) {
-        res += val;
+    if(reduceLast) {
+        int res = 0;
+        for(int i = 0; i < numWorkers; i++) {
+            res += workerResult[i][0];
+        }
+        std::cout << res << "\n" << "\n";
+    } else {
+        std::vector<int> workerRes;
+        for(int i = 0; i < numWorkers; i++) {
+            for(int j = 0; j < workerResult[i].size(); j++) {
+                workerRes.push_back(workerResult[i][j]);
+            }
+        }
+
+        std::sort(std::begin(workerRes), std::end(workerRes));
+        printingVector(workerRes);
+
+        std::cout << "\nThe result is: ";
+        bool result;
+
+        for(int i = 0; i < workerRes.size(); i++) {
+            if(data[i] != workerRes[i]) {
+                result = false;
+                break;
+            }
+        }
+
+        if(data.size() != workerRes.size()) {
+            result = false;
+        } else {
+            result = true;
+        }
+
+        if(result) {
+            std::cout << "Correct\n";
+        } else {
+            std::cout << "Incorrect (suca)\n";
+        }
     }
 
-    std::cout << res << "\n" << "\n";
 
     std::cout << "For testing: " << "\n";
     std::cout << "dataMatrix: {";
@@ -254,10 +298,10 @@ void Leader::calcResult() {
 }
 
 void Leader::sendCustomData(){
-    dataMatrix = {{73, 46, 8, 35, 87, 70, 58, 98, 47, 32, 21, 66, 37, 4, 3, 46, 45, 39, 72},
-                    {22, 42, 3, 49, 13, 83, 30, 41, 67, 84, 65, 37, 83, 96, 41, 96, 70},
-                    {70, 6, 98, 64, 40, 95, 3, 53, 19, 36, 9, 75, 61, 21, 11, 14, 27, 32, 54, 69},
-                    {50, 3, 61, 10, 67, 8, 76, 96, 71, 88, 53, 46, 40, 45, 81, 64, 53}};
+    dataMatrix = {{25, 63, 60, 19, 89, 89 },
+                    {74, 89, 18, 49, 61},
+                    {23, 15, 29, 32 },
+                    {72, 88, 87}};
 
     for(int i=0; i<dataMatrix.size(); i++){
         for(int j=0; j<dataMatrix[i].size(); j++){
@@ -280,8 +324,8 @@ void Leader::sendCustomData(){
 
 void Leader::sendCustomSchedule()
 {
-    parameters= {30, 0, 2, 0, 0, 5, 0, 2, 0, 1, 2, 0, 0};
-    schedule= {"gt", "changekey", "sub", "changekey", "changekey", "sub", "changekey", "add", "changekey", "mul", "add", "changekey", "reduce"};
+    parameters= {30, 0, 2, 0, 0, 5, 0, 2, 0, 1, 2, 0};
+    schedule= {"gt", "changekey", "sub", "changekey", "changekey", "sub", "changekey", "add", "changekey", "mul", "add", "changekey"};
 
     scheduleSize = schedule.size();
     bool reduceFound = true;
@@ -378,7 +422,16 @@ void Leader::handleCheckChangeKeyAckMessage(CheckChangeKeyAckMessage *msg){
 
     ckReceived[id] = msg -> getChangeKeyReceived();
     ckSent[id] = msg -> getChangeKeySent();
-    workerResult[id] = msg -> getPartialRes();
+    if(reduceLast) {
+        workerResult[id][0] = msg -> getPartialRes();
+    } else {
+        int resultSize = msg -> getPartialVectorArraySize();
+        workerResult[id].clear();
+        workerResult[id].resize(resultSize);
+        for(int i = 0; i < resultSize; i++) {
+            workerResult[id][i] = msg -> getPartialVector(i);
+        }
+    }
     ckChecked[id] = 1;
     bool allChecked = true;
 
@@ -488,8 +541,8 @@ void Leader::sendData(int idDest)
     msg -> setAssigned_id(idDest);
     
     // Generate a random dimension for the array of values
-    int minimum = 15;
-    int maximum = 20;
+    int minimum = 20;
+    int maximum = 25;
     int numElements = minimum + rand() % (maximum - minimum + 1);
     std::cout << "#elements: " << numElements << "\n";
     
@@ -506,7 +559,7 @@ void Leader::sendData(int idDest)
         data.push_back(value);
         currentData.push_back(value);
     }
-    data_clone.push_back(currentData);
+    dataMatrix.push_back(currentData);
     std::cout << "\n" << "\n";
     send(msg, "out", idDest);
 }

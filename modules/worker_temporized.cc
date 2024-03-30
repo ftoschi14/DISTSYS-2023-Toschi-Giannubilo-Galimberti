@@ -152,6 +152,7 @@ protected:
 	void persistCKCounter();
 
 	// Other utils
+	void loadSavedResult();
 	void printingVector(std::vector<int> vector);
 	void printScheduledData(std::map<int, std::deque<int>> data);
 	void printDataInsertMessage(DataInsertMessage* msg, bool recv);
@@ -490,6 +491,17 @@ void Worker::processStep(){
 		if(reduceLast) {
 			persistingReduce(tmpReduce);
 		} else {
+			// Handle changeKeys in last schedule step
+			std::cout << "Dopo la prima if:";
+			printScheduledData(data);
+
+			if(data.size() == (schedule.size() + 1) && !data[schedule.size()].empty()) {
+				for(const auto& value : data[schedule.size()]) {
+					tmpResult.push_back(value);
+				}
+				data[schedule.size()].clear(); // Do this to make the scheduled data empty
+			}
+
 			persistingResult(tmpResult);
 			tmpResult.clear();
 		} 
@@ -529,7 +541,20 @@ void Worker::processStep(){
 		if(finishNoticeSent && finishedPartialCK && checkChangeKeyReceived) {
 			CheckChangeKeyAckMessage* checkChangeKeyAckMsg = new CheckChangeKeyAckMessage();
 			checkChangeKeyAckMsg->setWorkerId(workerId);
-			checkChangeKeyAckMsg->setPartialRes(tmpReduce);
+
+			if(reduceLast) {
+				checkChangeKeyAckMsg->setPartialRes(tmpReduce);
+			} else {
+				//Load full result
+				loadSavedResult();
+				std::cout << "Sending partial result: ";
+				printingVector(tmpResult);
+				checkChangeKeyAckMsg->setPartialVectorArraySize(tmpResult.size());
+				for(int i = 0; i < tmpResult.size(); i++) {
+					checkChangeKeyAckMsg->setPartialVector(i, tmpResult[i]);
+				}
+				tmpResult.clear();
+			}
 			checkChangeKeyAckMsg->setChangeKeyReceived(changeKeyReceived);
 			checkChangeKeyAckMsg->setChangeKeySent(changeKeySent);
 			send(checkChangeKeyAckMsg, "out", 0);
@@ -624,7 +649,7 @@ void Worker::loadNextBatch(){
 			EV << "CK data empty" << "\n";
 		} else {
 			EV << "\n\nCK not empty";
-			for(int i=0; i < schedule.size(); i++) {
+			for(int i=0; i < ckBatch.size(); i++) {
 				data[i].insert(data[i].end(), ckBatch[i].begin(), ckBatch[i].end());
 			}
 		}
@@ -664,7 +689,6 @@ bool Worker::applyOperation(int& value){
         	return false;
         }
 		
-        
         return true;
 	}
 	return false;
@@ -750,6 +774,24 @@ void Worker::loadPartialResults(){
 	}
 	
 	std::cout << "Worker " << workerId << " loaded reduce: " << tmpReduce << " [CRASH RECOVERY]" << "\n";
+}
+
+void Worker::loadSavedResult() {
+	std::string res_filename = "Data/Worker_" + std::to_string(workerId) + "/result.csv";
+	std::ifstream res_file(res_filename, std::ios::binary);
+	std::string line;
+
+	if(res_file.is_open()){
+		while (std::getline(res_file, line)) {
+            std::istringstream iss(line);
+            std::string part;
+
+            while (std::getline(iss, part)) {
+                tmpResult.push_back(std::stoi(part));
+            }
+        }
+        res_file.close();
+	}
 }
 
 bool Worker::failureDetection(){
