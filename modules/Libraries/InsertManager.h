@@ -10,15 +10,42 @@ namespace fs = std::filesystem;
 
 class InsertManager {
 private:
+    std::map<int, std::vector<int>> previousData; // Map of scheduleStep to list of new values
     std::map<int, std::vector<int>> insertedData; // Map of scheduleStep to list of new values
     std::map<int, int> senderReqMap; // Keep track of elaborated reqIDs from different senders
     std::string insertFilename;
+    std::string previousBatchFilename;
     std::string requestFilename;
     int currentBatchSize;
     int batchSize;
 
-    void overridePersistedData() {
-        std::ofstream insertFile(insertFilename);
+    void clearTempFile() {
+        std::ofstream tempFile(previousBatchFilename, std::ofstream::trunc);
+        tempFile.close();
+        currentBatchSize = 0;
+    }
+
+    void saveCurrentBatch() {
+        std::ofstream tempFile(previousBatchFilename);
+        if (!tempFile.is_open()) {
+            std::cout << "Error opening temp file for writing." << std::endl;
+            return;
+        }
+
+        std::cout << "[CK] Saving: ";
+
+        for (const auto& stepPair : previousData) {
+            for (const int value : stepPair.second) {
+                tempFile << stepPair.first << ',' << value << std::endl;
+                std::cout << stepPair.first << ", " << value << " | ";
+            }
+        }
+        std::cout << "\n";
+        tempFile.close();
+    }
+
+    void updateInsertFile() {
+        std::ofstream insertFile(insertFilename, std::ofstream::trunc);
         if (!insertFile.is_open()) {
             std::cout << "Error opening insert file for writing.\n";
             return;
@@ -59,12 +86,48 @@ private:
     }
 
     void loadData() {
+        std::string line;
+
+        // Previous batch data
+        if(fs::exists(previousBatchFilename)) {
+            std::ifstream previousDataFile(previousBatchFilename, std::ios::binary);
+            if (!previousDataFile.is_open()) {
+                std::cout << "Error opening temp data file for reading.\n";
+                return;
+            }
+
+            while (std::getline(previousDataFile, line)) {
+                std::istringstream iss(line);
+                std::string part;
+                std::vector<int> parts;
+
+                while (std::getline(iss, part, ',')) {
+                    parts.push_back(std::stoi(part));
+                }
+
+                // Line format: "scheduleStep,value"
+                if (parts.size() == 2) {
+                    int scheduleStep = parts[0];
+                    int value = parts[1];
+                    previousData[scheduleStep].push_back(value);
+                }
+            }
+            previousDataFile.close();
+
+            for(int i = 0; i < previousData.size(); i++) {
+                currentBatchSize += previousData[i].size(); // This remains 0 if we load no data
+            }
+            std::cout << "Read previous file - size " << currentBatchSize << "\n";
+            printScheduledData();
+        }
+
+        // Inserted Data
         std::ifstream insertFile(insertFilename, std::ios::binary);
         if (!insertFile.is_open()) {
             std::cout << "Error opening insert file for reading.\n";
             return;
         }
-        std::string line;
+
         while (std::getline(insertFile, line)) {
             std::istringstream iss(line);
             std::string part;
@@ -83,6 +146,10 @@ private:
         }
         insertFile.close();
 
+        std::cout << "Loaded:\n";
+        printInsertedData();
+
+        // Request Log File
         std::ifstream reqFile(requestFilename, std::ios::binary);
         if (!reqFile.is_open()) {
             std::cout << "Error opening request file for reading.\n";
@@ -110,13 +177,13 @@ private:
 
 
 public:
-    InsertManager() : insertFilename(""), requestFilename(""), batchSize(0) {
+    InsertManager() : insertFilename(""), requestFilename(""), previousBatchFilename(""), batchSize(0) {
         std::cout << "WARNING: Using default InsertManager constructor - missing filenames and BatchSize\n";
     }
 
-    InsertManager(const std::string& insertFilename, const std::string& requestFilename, int batchSize)
-        : insertFilename(insertFilename), requestFilename(requestFilename), batchSize(batchSize) {
-
+    InsertManager(const std::string& insertFilename, const std::string& requestFilename, const std::string& previousBatchFilename, int batchSize)
+        : insertFilename(insertFilename), requestFilename(requestFilename), previousBatchFilename(previousBatchFilename), batchSize(batchSize) {
+            currentBatchSize = 0;
         if (fs::exists(insertFilename) && fs::exists(requestFilename)) {
             loadData();
         } else {
@@ -131,7 +198,13 @@ public:
 
     std::map<int, std::vector<int>> getBatch() {
         std::map<int, std::vector<int>> batch;
-        currentBatchSize = 0;
+
+        if(currentBatchSize > 0) {
+            batch = previousData;
+            std::cout << "Previous data: \n";
+            printScheduledData();
+            return batch;
+        }
 
         auto it = insertedData.begin();
         while (it != insertedData.end() && currentBatchSize < batchSize) {
@@ -158,6 +231,12 @@ public:
                 it++; // Move to the next scheduleStep if there are remaining values
             }
         }
+        previousData = batch;
+        saveCurrentBatch();
+        updateInsertFile();
+
+        std::cout << "Current data: \n";
+        printScheduledData();
         return batch;
     }
 
@@ -178,7 +257,7 @@ public:
 
     void persistData() {
         if(currentBatchSize > 0) {
-            overridePersistedData(); // Assuming result was persisted, we can get rid of data points elaborated
+            clearTempFile(); // Assuming result was persisted, we can get rid of data points elaborated
         }
     }
 
@@ -194,12 +273,22 @@ public:
     }
 
     void printScheduledData(){
-        for(int i = 0; i<insertedData.size(); i++){
+        for(int i = 0; i<previousData.size(); i++){
             std::cout << "Step " << i << ": ";
-            for(int j = 0; j < insertedData[i].size(); j++){
-                std::cout << insertedData[i][j] << " ";
+            for(int j = 0; j < previousData[i].size(); j++){
+                std::cout << previousData[i][j] << " ";
             }
         std::cout << "\n";
+        }
     }
-}
+
+    void printInsertedData(){
+        for(int i = 0; i<insertedData.size(); i++){
+            std::cout << "Step " << i << ": ";
+            for(int j = 0; j < previousData[i].size(); j++){
+                std::cout << previousData[i][j] << " ";
+            }
+        std::cout << "\n";
+        }
+    }
 };

@@ -81,6 +81,7 @@ private:
 	int batchSize;
 	bool reduceLast;
 	bool localBatch;
+	bool previousLocal;
 
 	// General Elaboration Information
 	bool finishedLocalElaboration;
@@ -478,7 +479,8 @@ void Worker::initializeDataModules() {
 	// Instantiate an InsertManager
 	std::string insertFilename = folder + "inserted.csv";
 	std::string requestFilename = folder + "requests_log.csv";
-	insertManager = new InsertManager(insertFilename, requestFilename, batchSize);
+	std::string tempFilename = folder + "ck_batch.csv";
+	insertManager = new InsertManager(insertFilename, requestFilename, tempFilename, batchSize);
 }
 
 void Worker::processStep(){
@@ -491,11 +493,18 @@ void Worker::processStep(){
 			persistingResult(tmpResult);
 			tmpResult.clear();
 		} 
-		std::cout<<"Before persisting counter\n";
-		persistCKCounter();
+
+		if(previousLocal) {
+			loader->saveProgress();
+		} else {
+			insertManager->persistData();
+		}
+
 		while(isScheduleEmpty() && (!finishedLocalElaboration || !finishedPartialCK)){
 			loadNextBatch();
 		}
+
+		persistCKCounter();
 
 		std::cout << "Worker " << workerId << " - Loaded data:" << "\n";
 		//printScheduledData(data);
@@ -594,10 +603,8 @@ void Worker::processReduce(){
 void Worker::loadNextBatch(){
 	data.clear();
 
-	insertManager->persistData();
-	loader->saveProgress();
-
 	if(localBatch) {
+		previousLocal = true;
 		std::cout << "Worker " << workerId << " - Loading local:\n";
 		std::vector<int> batch = loader->loadBatch();
 		if(batch.empty()){
@@ -608,6 +615,7 @@ void Worker::loadNextBatch(){
         	data[0].insert(data[0].end(), batch.begin(), batch.end());
 		}
 	} else {
+		previousLocal = false;
 		EV << "Loading CK...\n";
 		std::map<int, std::vector<int>> ckBatch = insertManager->getBatch();
 
@@ -649,12 +657,12 @@ bool Worker::applyOperation(int& value){
 	} else if(operation == "changekey") {
 		int newKey = changeKey(value, changeKeyProbability);
 		//std::cout<<"New key: "<<newKey<<"\n";
-		/*if(newKey != -1) {
+		if(newKey != -1) {
         	std::cout << "Changing Key: " << workerId << " -> " << newKey << " for value: "<<value<<"\n";
         	sendData(newKey, value, currentScheduleStep + 1); // 'i' == Schedule step
 
         	return false;
-        }*/
+        }
 		
         
         return true;
@@ -707,7 +715,7 @@ bool Worker::filter(std::string operation, int parameter, int data){
 }
 
 int Worker::changeKey(int data, float probability){
-	int ckValue = data % (static_cast<int>(1/(probability))*numWorkers);
+	int ckValue = data % (static_cast<int>((1/(probability)) * numWorkers));
 	if(ckValue == workerId || ckValue >= numWorkers || ckValue < 0) {
 		return -1;
 	}
@@ -798,6 +806,7 @@ void Worker::loadChangeKeyData(){
 			if(parts.size() == 2){
 				changeKeyCtr = parts[0];
 				localBatch = parts[1] == 1 ? true : false;
+				previousLocal = localBatch;
 				std::cout<<"Worker "<<workerId<<" -> LOADING: ChangeKeyCtr: "<<changeKeyCtr<<", localBatch: "<<localBatch<<"\n";
 			}else{
 				std::cout<<"Error in loading change key counter\n";
@@ -964,7 +973,7 @@ void Worker::persistCKCounter(){
 	std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
 	std::string fileName = folder + "CK_counter.csv";
 
-	int batchType = localBatch ? 1 : 0;
+	int batchType = previousLocal ? 1 : 0;
 
 	std::ofstream result_file(fileName);
 	if(result_file.is_open()){
