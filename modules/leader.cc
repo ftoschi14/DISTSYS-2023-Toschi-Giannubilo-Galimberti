@@ -34,6 +34,7 @@ class Leader : public cSimpleModule
         std::vector<std::string> schedule;
         std::vector<int> parameters;
         std::vector<int> finishedWorkers;
+        std::vector<int> ckChecked;
         std::vector<int> pingWorkers;
         cMessage *ping_msg;
         cMessage *check_msg;
@@ -77,13 +78,16 @@ void Leader::initialize()
     for(int i = 0; i < numWorkers; i++)
     {
         finishedWorkers.push_back(0);
+        ckChecked.push_back(0);
+        
     }
-    /*for(int i = 0; i < numWorkers; i++)
+    /* for(int i = 0; i < numWorkers; i++)
 	{
         srand((unsigned) time(NULL) + i);
         // Call the function for sending the data
 	    sendData(i);
 	}*/
+   
 	
     sendCustomData();
 
@@ -125,18 +129,22 @@ void Leader::finish() {
     std::cout << res << "\n" << "\n";
 
     std::cout << "For testing: " << "\n";
-    std::cout << "Data: {\n";
+    std::cout << "dataMatrix: {";
 
     for(const auto& row : dataMatrix) {
         std::cout <<"{";
         printingVector(row);
-        std::cout << "}\n";
+        if(row != dataMatrix.back()){
+            std::cout << "},\n";
+        } else {
+            std::cout << "}\n";
+        }
     }
     std::cout << "};" << "\n";
-    std::cout << "parameters: {";
+    std::cout << "parameters = {";
     printingVector(parameters);
     std::cout << "};" << "\n";
-    std::cout << "Schedule: {";
+    std::cout << "schedule = {";
     printingStringVector(schedule);
     std::cout << "};" << "\n";
 
@@ -244,42 +252,12 @@ void Leader::calcResult() {
         // 'changekey' operation is ignored as per instructions.
     }
 }
-/*void Leader::sendCustomData(){
-    std::vector<int> data_1 = {18, 78, 25, 35, 75, 5, 53, 21, 36, 100, 81, 78, 59, 51, 57, 60, 32, 64, 100, 48, 46, 64, 28, 52, 70, 11, 41, 33, 3, 57, 63};
-    std::vector<int> data_2 = {66, 42, 21, 50, 2, 17, 26, 33, 88, 52, 25, 48, 37, 75, 95, 10, 58, 95, 56, 64, 27, 10, 42, 87, 29, 20, 17, 58, 20, 90, 100, 32, 45, 60};
-    
-    data = {18, 78, 25, 35, 75, 5, 53, 21, 36, 100, 81, 78, 59, 51, 57, 60, 32, 64, 100, 48, 46, 64, 28, 52, 70, 11, 41, 33, 3, 57, 63, 66, 42, 21, 50, 2, 17, 26, 33, 88, 52, 25, 48, 37, 75, 95, 10, 58, 95, 56, 64, 27, 10, 42, 87, 29, 20, 17, 58, 20, 90, 100, 32, 45, 60};
-
-    // Generate a random dimension for the array of values
-    int numElements_1 = data_1.size();
-    int numElements_2 = data_2.size();
-
-    SetupMessage *msg_1 = new SetupMessage();
-    msg_1 -> setAssigned_id(0);
-    msg_1 -> setDataArraySize(numElements_1);
-    for(int j = 0; j < numElements_1; j++)
-    {
-        msg_1 -> setData(j, data_1[j]);
-    }
-    send(msg_1, "out", 0);
-
-    SetupMessage *msg_2 = new SetupMessage();
-    msg_2 -> setAssigned_id(1);
-    msg_2 -> setDataArraySize(numElements_2);
-    for(int j = 0; j < numElements_2; j++)
-    {
-        msg_2 -> setData(j, data_2[j]);
-    }
-    send(msg_2, "out", 1);
-}*/
 
 void Leader::sendCustomData(){
-    dataMatrix = {
-{69, 44, 17, 92, 39, 97, 9, 85, 58, 48, 1, 13, 48, 78, 60, 91, 14, 76, 5, 62, 32, 59, 9, 18, 82, 1, 32, 5, 22, 32, 89, 19, 99, 33},
-{18, 40, 12, 38, 98, 10, 82, 29, 10, 100, 45, 84, 94, 70, 30, 41, 71, 7, 61, 77, 13, 74, 24, 53, 41, 41, 40, 98, 39, 65, 58, 83, 18, 95, 72, 81, 73, 97},
-{66, 36, 8, 53, 24, 54, 23, 41, 62, 52, 89, 23, 72, 94, 68, 59, 96, 38, 86, 93},
-{47, 100, 71, 67, 51, 67, 96, 84, 81, 4, 33, 94, 19, 18, 38, 9, 54, 68, 43, 40, 7, 36, 53},
-};
+    dataMatrix = {{73, 46, 8, 35, 87, 70, 58, 98, 47, 32, 21, 66, 37, 4, 3, 46, 45, 39, 72},
+                    {22, 42, 3, 49, 13, 83, 30, 41, 67, 84, 65, 37, 83, 96, 41, 96, 70},
+                    {70, 6, 98, 64, 40, 95, 3, 53, 19, 36, 9, 75, 61, 21, 11, 14, 27, 32, 54, 69},
+                    {50, 3, 61, 10, 67, 8, 76, 96, 71, 88, 53, 46, 40, 45, 81, 64, 53}};
 
     for(int i=0; i<dataMatrix.size(); i++){
         for(int j=0; j<dataMatrix[i].size(); j++){
@@ -299,10 +277,11 @@ void Leader::sendCustomData(){
         send(msg, "out", i);
     }
 }
+
 void Leader::sendCustomSchedule()
 {
-    parameters = {30, 0, 2, 0, 0, 5, 0, 2, 0, 1, 2, 0, 0};
-    schedule = {"gt", "changekey", "sub", "changekey", "changekey", "sub", "changekey", "add", "changekey", "mul", "add", "changekey", "reduce"};
+    parameters= {30, 0, 2, 0, 0, 5, 0, 2, 0, 1, 2, 0, 0};
+    schedule= {"gt", "changekey", "sub", "changekey", "changekey", "sub", "changekey", "add", "changekey", "mul", "add", "changekey", "reduce"};
 
     scheduleSize = schedule.size();
     bool reduceFound = true;
@@ -400,20 +379,26 @@ void Leader::handleCheckChangeKeyAckMessage(CheckChangeKeyAckMessage *msg){
     ckReceived[id] = msg -> getChangeKeyReceived();
     ckSent[id] = msg -> getChangeKeySent();
     workerResult[id] = msg -> getPartialRes();
+    ckChecked[id] = 1;
+    bool allChecked = true;
 
+    for(int i = 0; i < numWorkers; i++){
+        if(ckChecked[i] == 0){
+            allChecked = false;
+            break;
+        }
+    }
     EV<<"ChangeKeyReceived: "<<counter(ckReceived)<<" ChangeKeySent: "<<counter(ckSent)<<"\n";
     EV<<"Finished: "<<finished<<"\n";
-    if(counter(ckReceived) != counter(ckSent) && finished){
+    if(counter(ckReceived) != counter(ckSent) && finished && allChecked){
         for(int i = 0; i < numWorkers; i++){
-            
+            ckChecked[i] = 0;   
             FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
             finishLocalMsg -> setWorkerId(i);
             send(finishLocalMsg, "out", i);
-            
         }
     }else{
-        if(finished && firstTime){
-            firstTime = false;
+        if(finished && allChecked){
             for(int i = 0; i < numWorkers; i++){
                 FinishSimMessage* finishSimMsg = new FinishSimMessage();
                 finishSimMsg -> setWorkerId(i);
@@ -503,8 +488,8 @@ void Leader::sendData(int idDest)
     msg -> setAssigned_id(idDest);
     
     // Generate a random dimension for the array of values
-    int minimum = 20;
-    int maximum = 25;
+    int minimum = 15;
+    int maximum = 20;
     int numElements = minimum + rand() % (maximum - minimum + 1);
     std::cout << "#elements: " << numElements << "\n";
     
