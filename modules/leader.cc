@@ -6,6 +6,7 @@
 #include <ctime>
 #include <algorithm>
 #include <numeric> // For std::accumulate
+#include <fstream>
 
 #include "setup_m.h"
 #include "schedule_m.h"
@@ -27,6 +28,7 @@ class Leader : public cSimpleModule
         bool reduceLast;
         int numWorkers;
         int scheduleSize;
+        int dataSize;
         std::vector<int> ckReceived;
         std::vector<int> ckSent;
         std::vector<std::vector<int>> workerResult;
@@ -43,6 +45,11 @@ class Leader : public cSimpleModule
         std::vector<int> data;
         std::vector<std::vector<int>> data_clone;
         std::vector<std::vector<int>> dataMatrix;
+
+        // Utils for plotting
+        simtime_t startTime;
+        int workerFailureProbability;
+        int workerBatchSize;
     protected:
         virtual void initialize() override;
         virtual void finish() override;
@@ -64,6 +71,10 @@ class Leader : public cSimpleModule
         void printingVector(std::vector<int> vector);
         void printingStringVector(std::vector<std::string> vector);
         int counter(std::vector<int> vec);
+
+        // Util functions
+        void getWorkerData();
+        void logSimData();
 };
 
 Define_Module(Leader);
@@ -117,6 +128,9 @@ void Leader::initialize()
 	timeout = 2;
 	check_msg = new cMessage("checkPing");
 	scheduleAt(simTime() + interval + timeout, check_msg);
+
+    startTime = simTime();
+    getWorkerData();
 }
 
 void Leader::finish() {
@@ -167,7 +181,7 @@ void Leader::finish() {
         if(result) {
             std::cout << "Correct\n";
         } else {
-            std::cout << "Incorrect (suca)\n";
+            std::cout << "Incorrect\n";
         }
     }
 
@@ -201,6 +215,8 @@ void Leader::finish() {
         cancelEvent(check_msg);
     }
     delete check_msg;
+
+    logSimData();
 }
 
 void Leader::calcResultFor() {
@@ -544,6 +560,9 @@ void Leader::sendData(int idDest)
     int minimum = 20;
     int maximum = 25;
     int numElements = minimum + rand() % (maximum - minimum + 1);
+
+    dataSize += numElements;
+
     std::cout << "#elements: " << numElements << "\n";
     
     msg -> setDataArraySize(numElements);
@@ -717,5 +736,66 @@ int Leader::counter(std::vector<int> vec)
         count += vec[i];
     }
     return count;
+}
+
+void Leader::getWorkerData() {
+    cModule *worker = getParentModule()->getSubmodule("worker", 0); // Access the first worker
+    if (worker != nullptr) {
+        // Accessing parameters
+        workerFailureProbability = worker->par("failureProbability").intValue();
+        workerBatchSize = worker->par("batchSize").intValue();
+    }
+}
+
+void Leader::logSimData() {
+    // Capture the simulation end time
+    simtime_t endTime = simTime();
+
+    // Calculate duration
+    simtime_t duration = endTime - startTime;
+
+    // Write duration to a file
+
+    fs::path parentDir = "./Logs/"; // The directory where simulation folders are stored
+    int maxId = -1;
+
+    // Ensure the parent directory exists
+    if (!fs::exists(parentDir)) {
+        fs::create_directory(parentDir);
+    }
+
+    // Scan existing folders to find the max ID
+    for (const auto& entry : fs::directory_iterator(parentDir)) {
+        if (entry.is_directory()) {
+            std::string folderName = entry.path().filename().string();
+            try {
+                int folderId = std::stoi(folderName);
+                maxId = std::max(maxId, folderId);
+            } catch (const std::invalid_argument& e) {
+                // Not a number-named folder, ignore
+            }
+        }
+    }
+
+    // Determine the folder name for the new simulation
+    int newFolderId = maxId + 1;
+    fs::path newFolderPath = parentDir / std::to_string(newFolderId);
+
+    // Create the folder for the new simulation
+    if (fs::create_directory(newFolderPath)) {
+        std::cout << "Created directory for simulation ID: " << newFolderId << std::endl;
+    } else {
+        std::cerr << "Failed to create directory for new simulation." << std::endl;
+        return; // Error
+    }
+
+    std::string fileName = newFolderPath.string() + "/SIM_" + std::to_string(numWorkers) + "_" + std::to_string(workerFailureProbability) + "_" + std::to_string(dataSize) + "_" + std::to_string(workerBatchSize) + "_" + std::to_string(scheduleSize) + ".log"; 
+    std::ofstream outFile(fileName);
+    if (outFile.is_open()) {
+        outFile << duration;
+        outFile.close();
+    } else {
+        EV << "Error opening file for writing simulation duration." << std::endl;
+    }
 }
 

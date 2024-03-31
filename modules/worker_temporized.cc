@@ -102,6 +102,13 @@ private:
 	// Ping reply holder
 	PingMessage *replyPingMsg;
 
+	// Others - For Logging (Ignore)
+	std::map<std::string, std::vector<simtime_t>> per_op_exec_times;
+	std::vector<simtime_t> per_schedule_exec_times;
+	simtime_t begin_op;
+	simtime_t begin_batch;
+	simtime_t begin_elab;
+
 protected:
 	virtual void initialize() override;
 	virtual void finish() override;
@@ -157,6 +164,7 @@ protected:
 	void printScheduledData(std::map<int, std::deque<int>> data);
 	void printDataInsertMessage(DataInsertMessage* msg, bool recv);
 	bool isScheduleEmpty();
+	void logSimData();
 };
 
 Define_Module(Worker);
@@ -216,6 +224,8 @@ void Worker::finish(){
 	// Event Message holders
 	delete pingResEvent;
 	delete nextStepMsg;
+
+	logSimData();
 }
 
 void Worker::handleMessage(cMessage *msg){
@@ -361,6 +371,10 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
 
     loadNextBatch(); // Load first batch
 
+    // Logging code (IGNORE)
+    begin_elab = simTime();
+    // End of logging code
+
 	scheduleAt(simTime(), nextStepMsg);
 }
 
@@ -488,6 +502,16 @@ void Worker::processStep(){
 	if(failed) return;
 
 	if(currentScheduleStep >= schedule.size()) {
+
+		// Logging code (IGNORE)
+
+		simtime_t end_batch = simTime();
+		simtime_t batch_duration = end_batch - begin_batch;
+
+		per_schedule_exec_times.push_back(batch_duration);
+
+		// End of Logging code
+
 		if(reduceLast) {
 			persistingReduce(tmpReduce);
 		} else {
@@ -561,6 +585,13 @@ void Worker::processStep(){
 			EV<<"\nChangeKey checked at worker: "<<workerId<<"\n\n";
 			return;
 		}
+
+		// Logging code (IGNORE)
+
+		begin_batch = simTime();
+		begin_op = simTime();
+
+		// End of Logging code
 	}
 
 	if(!data[currentScheduleStep].empty()){
@@ -595,9 +626,24 @@ void Worker::processStep(){
 	} else {
 		EV << "Empty map, finished current step\n\n";
 		std::cout << "Worker " << workerId << " finished step " << currentScheduleStep << " - New step data: \n";
-		//printScheduledData(data);
-		//std::cout << "\n";
+		
+		// Logging code (IGNORE)
+
+		simtime_t end_op = simTime();
+		simtime_t duration = end_op - begin_op;
+
+		per_op_exec_times[schedule[currentScheduleStep]].push_back(duration);
+
+		// End of Logging code
+
 		currentScheduleStep++;
+
+		// Logging code (IGNORE)
+
+		begin_op = simTime();
+
+		// End of Logging code
+
 		if(reduceLast && currentScheduleStep == schedule.size() - 1) {
 			EV << "Entering reduce\n\n";
 			//std::cout << "Worker " << workerId << " reducing: ";
@@ -860,6 +906,20 @@ void Worker::loadChangeKeyData(){
 
 void Worker::deallocatingMemory(){
 	std::cout << "Worker " << workerId << " failing..." << "\n";
+
+	// Logging code (IGNORE)
+
+	simtime_t end_op = simTime();
+	simtime_t end_batch = simTime();
+
+	simtime_t op_duration = end_op - begin_op;
+	simtime_t batch_duration = end_batch - begin_batch;
+
+	per_op_exec_times[schedule[currentScheduleStep]].push_back(op_duration);
+	per_schedule_exec_times.push_back(batch_duration);
+
+	// End of Logging code
+
 	failed = true;
 
 	//printScheduledData(debugData);
@@ -1088,4 +1148,80 @@ bool Worker::isScheduleEmpty(){
     }
     // All deques are empty
     return true;
+}
+
+void Worker::logSimData() {
+	// Capture the simulation end time
+    simtime_t end_elab = simTime();
+
+    // Calculate duration
+    simtime_t duration = end_elab - begin_elab;
+
+    // Write duration to a file
+
+    fs::path parentDir = "./Logs/"; // The directory where simulation folders are stored
+    int maxId = -1;
+
+    // Ensure the parent directory exists
+    if (!fs::exists(parentDir)) {
+        fs::create_directory(parentDir);
+    }
+
+    // Scan existing folders to find the max ID
+    for (const auto& entry : fs::directory_iterator(parentDir)) {
+        if (entry.is_directory()) {
+            std::string folderName = entry.path().filename().string();
+            try {
+                int folderId = std::stoi(folderName);
+                maxId = std::max(maxId, folderId);
+            } catch (const std::invalid_argument& e) {
+                // Not a number-named folder, ignore
+            }
+        }
+    }
+
+    // Determine the folder name for the new simulation
+    int newFolderId = maxId;
+    fs::path newFolderPath = parentDir / std::to_string(newFolderId);
+
+    // Assuming folder was already created by leader
+
+    // First: Save full elaboration duration
+    std::string fileName = newFolderPath.string() + "/WRK_" + std::to_string(workerId) + "_execTime_" + std::to_string(batchSize) + ".log"; 
+    std::ofstream outFile(fileName);
+    if (outFile.is_open()) {
+        outFile << duration;
+        outFile.close();
+    } else {
+        EV << "Error opening file for writing simulation duration." << std::endl;
+    }
+
+    // Second: Save per batch, full schedule elaboration times
+    fileName = newFolderPath.string() + "/WRK_" + std::to_string(workerId) + "_fullSched_" + std::to_string(batchSize) + ".log"; 
+    std::ofstream outFile_fs(fileName);
+    if (outFile_fs.is_open()) {
+        for(const auto& entry : per_schedule_exec_times) {
+        	outFile_fs << entry << "\n";
+        }
+        outFile_fs.close();
+    } else {
+        EV << "Error opening file for writing simulation duration." << std::endl;
+    }
+
+    // Third: Save per batch, per operation elaboration times
+    for(const auto& op : per_op_exec_times) {
+    	std::string opName = op.first;
+    	std::vector<simtime_t> execTimes = op.second;
+
+    	fileName = newFolderPath.string() + "/WRK_" + std::to_string(workerId) + "_" + opName +"_" + std::to_string(batchSize) + ".log"; 
+    	std::ofstream outFile_op(fileName);
+	    if (outFile_op.is_open()) {
+	        for(const auto& entry : execTimes) {
+	        	outFile_op << entry << "\n";
+	        }
+	        outFile_op.close();
+	    } else {
+	        EV << "Error opening file for writing simulation duration." << std::endl;
+	    }
+    }
 }
