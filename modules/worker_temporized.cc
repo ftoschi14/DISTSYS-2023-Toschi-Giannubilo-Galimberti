@@ -232,6 +232,7 @@ void Worker::finish(){
 void Worker::handleMessage(cMessage *msg){
 	//std::cout << "Worker " << workerId << " received a message - Scheduled at: " << msg->getArrivalTime() << "\n";
 	if(msg == nextStepMsg) {
+	    EV << "sono nella nextStepMsg\n";
 		processStep();
 		return;
 	}
@@ -499,11 +500,16 @@ void Worker::initializeDataModules() {
 	insertManager = new InsertManager(insertFilename, requestFilename, tempFilename, batchSize);
 }
 
-void Worker::processStep(){
-	if(failed) return;
+void Worker::processStep()
+{
+	if(failed)
+	{
+	    EV << "worker failed!\n";
+	    return;
+	}
 
-	if(currentScheduleStep >= schedule.size()) {
-
+	if(currentScheduleStep >= schedule.size())
+	{
 		// Logging code (IGNORE)
 
 		simtime_t end_batch = simTime();
@@ -1204,7 +1210,7 @@ void Worker::logSimData() {
         outFile << duration;
         outFile.close();
     } else {
-        EV << "Error opening file for writing simulation duration." << std::endl;
+        EV << "Error opening file for writing simulation duration.\n";
     }
 
     // Second: Save per batch, full schedule elaboration times
@@ -1216,7 +1222,7 @@ void Worker::logSimData() {
         }
         outFile_fs.close();
     } else {
-        EV << "Error opening file for writing simulation duration." << std::endl;
+        EV << "Error opening file for writing simulation duration.\n";
     }
 
     // Third: Save per batch, per operation elaboration times
@@ -1232,7 +1238,7 @@ void Worker::logSimData() {
 	        }
 	        outFile_op.close();
 	    } else {
-	        EV << "Error opening file for writing simulation duration." << std::endl;
+	        EV << "Error opening file for writing simulation duration.\n";
 	    }
     }
 }
