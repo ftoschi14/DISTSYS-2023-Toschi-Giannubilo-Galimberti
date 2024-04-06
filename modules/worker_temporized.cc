@@ -24,26 +24,35 @@
 
 #define LEADER_PORT 0
 
-#define MAP_EXEC_TIME_AVG 0.0001
-#define MAP_EXEC_TIME_STD 0.0003
+// ----- Fast operations -----
 
-#define FILTER_EXEC_TIME_AVG 0.0001
-#define FILTER_EXEC_TIME_STD 0.0003
+#define PING_DELAY_AVG 0.0001
+#define PING_DELAY_STD 0.001
 
-#define REDUCE_EXEC_TIME_AVG 0.02
-#define REDUCE_EXEC_TIME_STD 0.01
+#define FINISH_EXEC_DELAY_AVG 0.0002
+#define FINISH_EXEC_DELAY_STD 0.001
 
-#define CHANGEKEY_EXEC_TIME_AVG 0.0005
-#define CHANGEKEY_EXEC_TIME_STD 0.0005
+#define MAP_EXEC_TIME_AVG 0.001
+#define MAP_EXEC_TIME_STD 0.003
 
-#define FINISH_EXEC_DELAY_AVG 0.02
-#define FINISH_EXEC_DELAY_STD 0.02
+#define FILTER_EXEC_TIME_AVG 0.001
+#define FILTER_EXEC_TIME_STD 0.003
 
-#define PING_DELAY_AVG 0
-#define PING_DELAY_STD 0.01
+// (Fast when local)
+#define CHANGEKEY_EXEC_TIME_AVG 0.001
+#define CHANGEKEY_EXEC_TIME_STD 0.003
 
-#define RESTART_DELAY_AVG 0.5
-#define RESTART_DELAY_STD 0.02
+// ----- Medium-duration operations -----
+
+#define REDUCE_EXEC_TIME_AVG 0.01
+#define REDUCE_EXEC_TIME_STD 0.005
+
+#define BATCH_LOAD_TIME_AVG 0.01
+#define BATCH_LOAD_TIME_STD 0.005
+
+// ----- Slow operations -----
+#define RESTART_DELAY_AVG 1.5
+#define RESTART_DELAY_STD 0.2
 
 using namespace omnetpp;
 
@@ -104,6 +113,9 @@ private:
 	// Ping reply holder
 	PingMessage *replyPingMsg;
 
+	// Parameter conversion for lognormal distribution
+	std::map<std::string, std::pair<double, double>> lognormal_params;
+
 	// Others - For Logging (Ignore)
 	std::map<std::string, std::vector<simtime_t>> per_op_exec_times;
 	std::vector<simtime_t> per_schedule_exec_times;
@@ -160,6 +172,10 @@ protected:
 	void persistCKSentReceived();
 	void persistCKCounter();
 
+	// Delay distrbution utils
+	void convertParameters();
+	std::pair<double, double> calculateDistributionParams(double mean, double std);
+
 	// Other utils
 	void loadSavedResult();
 	void printingVector(std::vector<int> vector);
@@ -201,6 +217,8 @@ void Worker::initialize(){
 	localBatch = true;
 	failed = false;
 
+	convertParameters();
+
 	nextStepMsg = new NextStepMessage("NextStep");
 	pingResEvent = new PingResMessage("PingRes");
 	unstableMessage = new DataInsertMessage();
@@ -234,7 +252,6 @@ void Worker::finish(){
 void Worker::handleMessage(cMessage *msg){
 	//std::cout << "Worker " << workerId << " received a message - Scheduled at: " << msg->getArrivalTime() << "\n";
 	if(msg == nextStepMsg) {
-	    EV << "sono nella nextStepMsg\n";
 		processStep();
 		return;
 	}
@@ -274,7 +291,7 @@ void Worker::handleMessage(cMessage *msg){
 		}
 
 		// Generate random delay
-		float delay = lognormal(PING_DELAY_AVG, PING_DELAY_STD); // Log-normal to have always positive increments
+		double delay = calculateDelay("ping"); // Log-normal to have always positive increments
 		// Schedule response event
         scheduleAt(simTime() + delay , pingResEvent);
 		return;
@@ -432,7 +449,7 @@ void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *
 	cancelEvent(nextStepMsg);
 	}
 	
-	float delay = lognormal(FINISH_EXEC_DELAY_AVG, FINISH_EXEC_DELAY_STD);
+	double delay = calculateDelay("finish");
 	scheduleAt(simTime() + delay , nextStepMsg);
 }
 
@@ -478,7 +495,7 @@ void Worker::handleRestartMessage(RestartMessage *msg){
 		cancelEvent(nextStepMsg);
 	}
 
-	float delay = lognormal(RESTART_DELAY_AVG, RESTART_DELAY_STD);
+	double delay = calculateDelay("restart");
 
 	scheduleAt(simTime() + delay, nextStepMsg);
 	return;
@@ -506,7 +523,7 @@ void Worker::processStep()
 {
 	if(failed)
 	{
-	    EV << "worker failed!\n";
+	    EV << "Worker failed!\n";
 	    return;
 	}
 
@@ -517,6 +534,11 @@ void Worker::processStep()
 		simtime_t end_batch = simTime();
 		simtime_t batch_duration = end_batch - begin_batch;
 
+		if(reduceLast) {
+			simtime_t last_op_duration = end_batch - begin_op;
+			per_op_exec_times[getParentOperation(schedule[schedule.size() - 1])].push_back(last_op_duration);
+		}
+
 		per_schedule_exec_times.push_back(batch_duration);
 
 		// End of Logging code
@@ -525,9 +547,6 @@ void Worker::processStep()
 			persistingReduce(tmpReduce);
 		} else {
 			// Handle changeKeys in last schedule step
-			std::cout << "Dopo la prima if:";
-			printScheduledData(data);
-
 			if(data.size() == (schedule.size() + 1) && !data[schedule.size()].empty()) {
 				for(const auto& value : data[schedule.size()]) {
 					tmpResult.push_back(value);
@@ -551,7 +570,7 @@ void Worker::processStep()
 
 		persistCKCounter();
 
-		std::cout << "Worker " << workerId << " - Loaded data:" << "\n";
+		//std::cout << "Worker " << workerId << " - Loaded data:" << "\n";
 		//printScheduledData(data);
 		
 		EV<<"Status - Worker " << workerId << " - FinishedLocal: " << finishedLocalElaboration << " - FinishedCK: " << finishedPartialCK << " - CheckCKReceived: " << checkChangeKeyReceived << "\n";
@@ -601,6 +620,10 @@ void Worker::processStep()
 		begin_op = simTime();
 
 		// End of Logging code
+
+		double delay = calculateDelay("load");
+		scheduleAt(simTime() + delay, nextStepMsg);
+		return;
 	}
 
 	if(!data[currentScheduleStep].empty()){
@@ -628,7 +651,7 @@ void Worker::processStep()
 
 		if(waitingForInsert) return;
 
-		float delay = calculateDelay(schedule[currentScheduleStep]);
+		double delay = calculateDelay(schedule[currentScheduleStep]);
 		EV<<"Scheduling next step\n";
 		scheduleAt(simTime()+delay, nextStepMsg);
 		EV<<"Scheduled next step\n";
@@ -673,8 +696,8 @@ void Worker::processReduce(){
 
 	data[currentScheduleStep].clear();
 
-	float delay = calculateDelay(schedule[currentScheduleStep]);
-
+	double delay = calculateDelay(schedule[currentScheduleStep]);
+	std::cout << "Reduce delay: " << delay << "\n";
 	currentScheduleStep++;
 
 	scheduleAt(simTime()+delay, nextStepMsg);
@@ -750,16 +773,9 @@ bool Worker::applyOperation(int& value){
 }
 
 float Worker::calculateDelay(const std::string& operation){
-	if(operation == "add" || operation == "sub" || operation == "mul" || operation == "div") {
-		return lognormal(MAP_EXEC_TIME_AVG, MAP_EXEC_TIME_STD);
-	} else if(operation == "lt" || operation == "gt" || operation == "le" || operation == "ge") {
-		return lognormal(FILTER_EXEC_TIME_AVG, FILTER_EXEC_TIME_STD);
-	} else if(operation == "changekey") {
-		return lognormal(CHANGEKEY_EXEC_TIME_AVG, CHANGEKEY_EXEC_TIME_STD);
-	} else if(operation == "reduce") {
-		return lognormal(REDUCE_EXEC_TIME_AVG, REDUCE_EXEC_TIME_STD);
-	}
-	return 0;
+	double delay = lognormal(lognormal_params[getParentOperation(operation)].first, lognormal_params[getParentOperation(operation)].second);
+	std::cout << "OP:" << operation << "- delay: " << delay << "\n";
+	return delay;
 }
 
 int Worker::map(std::string operation, int parameter, int data){
@@ -1116,6 +1132,39 @@ void Worker::persistCKSentReceived(){
 	}
 }
 
+void Worker::convertParameters() {
+	// MAP
+	lognormal_params["map"] = calculateDistributionParams(MAP_EXEC_TIME_AVG, MAP_EXEC_TIME_STD);
+
+	// FILTER
+	lognormal_params["filter"] = calculateDistributionParams(FILTER_EXEC_TIME_AVG, FILTER_EXEC_TIME_STD);
+
+	// CK
+	lognormal_params["changekey"] = calculateDistributionParams(CHANGEKEY_EXEC_TIME_AVG, CHANGEKEY_EXEC_TIME_STD);
+
+	// REDUCE
+	lognormal_params["reduce"] = calculateDistributionParams(REDUCE_EXEC_TIME_AVG, REDUCE_EXEC_TIME_STD);
+
+	// PING
+	lognormal_params["ping"] = calculateDistributionParams(PING_DELAY_AVG, PING_DELAY_STD);
+
+	// RESTART
+	lognormal_params["restart"] = calculateDistributionParams(RESTART_DELAY_AVG, RESTART_DELAY_STD);
+
+	// FINISH
+	lognormal_params["finish"] = calculateDistributionParams(FINISH_EXEC_DELAY_AVG, FINISH_EXEC_DELAY_STD);
+
+	// LOAD
+	lognormal_params["load"] = calculateDistributionParams(BATCH_LOAD_TIME_AVG, BATCH_LOAD_TIME_STD);
+}
+
+std::pair<double, double> Worker::calculateDistributionParams(double m, double s) {
+	double mu = log((m * m) / sqrt(s * s + m * m));
+    double sigma = sqrt(log((s * s) / (m * m) + 1));
+
+    return std::make_pair(mu, sigma);
+}
+
 void Worker::printingVector(std::vector<int> vector){
     for(int i=0; i<vector.size(); i++){
         std::cout<<vector[i]<<" ";
@@ -1170,12 +1219,6 @@ std::string Worker::getParentOperation(const std::string& op) {
 }
 
 void Worker::logSimData() {
-	// Capture the simulation end time
-    simtime_t end_elab = simTime();
-
-    // Calculate duration
-    simtime_t duration = end_elab - begin_elab;
-
     // Write duration to a file
 
     fs::path parentDir = fs::path("./Logs") / fs::path(EXPERIMENT_NAME); // The directory where simulation folders are stored
@@ -1205,17 +1248,7 @@ void Worker::logSimData() {
 
     // Assuming folder was already created by leader
 
-    // First: Save full elaboration duration
-    std::string fileName = newFolderPath.string() + "/WRK_" + std::to_string(workerId) + "_execTime_" + std::to_string(batchSize) + ".log"; 
-    std::ofstream outFile(fileName);
-    if (outFile.is_open()) {
-        outFile << duration;
-        outFile.close();
-    } else {
-        EV << "Error opening file for writing simulation duration.\n";
-    }
-
-    // Second: Save per batch, full schedule elaboration times
+    // First: Save per batch, full schedule elaboration times
     fileName = newFolderPath.string() + "/WRK_" + std::to_string(workerId) + "_fullSched_" + std::to_string(batchSize) + ".log"; 
     std::ofstream outFile_fs(fileName);
     if (outFile_fs.is_open()) {
@@ -1227,7 +1260,7 @@ void Worker::logSimData() {
         EV << "Error opening file for writing simulation duration.\n";
     }
 
-    // Third: Save per batch, per operation elaboration times
+    // Second: Save per batch, per operation elaboration times
     for(const auto& op : per_op_exec_times) {
     	std::string opName = op.first;
     	std::vector<simtime_t> execTimes = op.second;
