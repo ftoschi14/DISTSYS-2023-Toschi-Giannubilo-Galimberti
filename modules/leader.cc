@@ -16,6 +16,8 @@
 #include "restart_m.h"
 #include "finishSim_m.h"
 
+#define EXPERIMENT_NAME "Increasing_Batch_Size"
+
 namespace fs = std::filesystem;
 using namespace omnetpp;
 
@@ -24,7 +26,7 @@ class Leader : public cSimpleModule
     private:
         bool firstTime = true;
         bool finished;
-        bool reallyFinished;
+        bool stopPing;
         bool reduceLast;
         int numWorkers;
         int scheduleSize;
@@ -83,7 +85,7 @@ void Leader::initialize()
 {
 
     dataSize = 0;
-    reallyFinished = false;
+    stopPing = false;
 
     // Remove all previous folders in './Data/'
     removeWorkersDirectory();
@@ -437,7 +439,7 @@ void Leader::handleMessage(cMessage *msg)
     // Self message to send ping to all worker nodes
     if(msg == ping_msg)
     {
-        if(reallyFinished) return;
+        if(stopPing) return;
 
         sendPing();
         return;
@@ -446,7 +448,7 @@ void Leader::handleMessage(cMessage *msg)
     // Self message to check who did not send a ping to the leader node
     if(msg == check_msg)
     {
-        if(reallyFinished) return;
+        if(stopPing) return;
 
         checkPing();
         return;
@@ -540,7 +542,7 @@ void Leader::handleCheckChangeKeyAckMessage(CheckChangeKeyAckMessage *msg)
                     FinishSimMessage* finishSimMsg = new FinishSimMessage();
                     finishSimMsg -> setWorkerId(i);
                     send(finishSimMsg, "out", i);
-                    reallyFinished = true;
+                    stopPing = true;
                 }
             }
         }
@@ -835,7 +837,7 @@ void Leader::logSimData()
     simtime_t duration = endTime - startTime;
 
     // Write duration to a file
-    fs::path parentDir = "./Logs/"; // The directory where simulation folders are stored
+    fs::path parentDir = fs::path("./Logs") / fs::path(EXPERIMENT_NAME); // The directory where simulation folders are stored
     int maxId = -1;
 
     // Ensure the parent directory exists
@@ -873,7 +875,7 @@ void Leader::logSimData()
     }
         else
         {
-            std::cerr << "Failed to create directory for new simulation.\n";
+            std::cerr << "Failed to create directory for new simulation.q";
             return; // Error
         }
 

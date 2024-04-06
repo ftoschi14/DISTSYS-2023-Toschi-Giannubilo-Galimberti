@@ -20,6 +20,8 @@
 #include "BatchLoader.h"
 #include "InsertManager.h"
 
+#define EXPERIMENT_NAME "Increasing_Batch_Size"
+
 #define LEADER_PORT 0
 
 #define MAP_EXEC_TIME_AVG 0.0001
@@ -1176,7 +1178,7 @@ void Worker::logSimData() {
 
     // Write duration to a file
 
-    fs::path parentDir = "./Logs/"; // The directory where simulation folders are stored
+    fs::path parentDir = fs::path("./Logs") / fs::path(EXPERIMENT_NAME); // The directory where simulation folders are stored
     int maxId = -1;
 
     // Ensure the parent directory exists
