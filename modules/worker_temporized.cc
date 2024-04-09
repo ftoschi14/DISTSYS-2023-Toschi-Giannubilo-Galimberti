@@ -684,7 +684,9 @@ void Worker::processStep()
 		simtime_t end_op = simTime();
 		simtime_t duration = end_op - begin_op;
 
-		per_op_exec_times[getParentOperation(schedule[currentScheduleStep])].push_back(duration);
+		if(duration > 0) {
+			per_op_exec_times[getParentOperation(schedule[currentScheduleStep])].push_back(duration);
+		}
 		begin_op = simTime(); // Reset timer for next operation		
 
 		// End of Logging code
@@ -955,8 +957,13 @@ void Worker::deallocatingMemory(){
 	simtime_t op_duration = end_op - begin_op;
 	simtime_t batch_duration = end_batch - begin_batch;
 
-	per_op_exec_times[getParentOperation(schedule[currentScheduleStep])].push_back(op_duration);
-	per_schedule_exec_times.push_back(batch_duration);
+	if(op_duration > 0){
+		per_op_exec_times[getParentOperation(schedule[currentScheduleStep])].push_back(op_duration);
+	}
+	
+	if(batch_duration > 0){
+		per_schedule_exec_times.push_back(batch_duration);
+	}
 
 	// End of Logging code
 
