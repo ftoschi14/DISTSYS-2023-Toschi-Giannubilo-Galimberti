@@ -16,7 +16,7 @@
 #include "restart_m.h"
 #include "finishSim_m.h"
 
-#define EXPERIMENT_NAME "Increasing_Batch_Size"
+#define EXPERIMENT_NAME "Increasing_Number_of_Data"
 
 namespace fs = std::filesystem;
 using namespace omnetpp;
@@ -109,8 +109,8 @@ void Leader::initialize()
     //sendCustomData();
 
     // Call the function for sending the schedule
-	sendSchedule();
-    //sendCustomSchedule();
+	//sendSchedule();
+    sendCustomSchedule();
 
 	finishedWorkers.resize(numWorkers);
 	pingWorkers.resize(numWorkers);
@@ -393,8 +393,8 @@ void Leader::sendCustomData()
 
 void Leader::sendCustomSchedule()
 {
-    parameters = {0, 8, 67, 9, 1, 9, 5, 6};
-    schedule = {"changekey", "mul", "le", "sub", "sub", "add", "div", "sub"};
+    parameters = {20, 0, 8, 0, 0, 5, 76, 1, 0, 25, 3, 0};
+    schedule = {"gt", "changekey", "mul", "changekey", "changekey", "div", "le", "sub", "changekey", "add", "div", "reduce"};
 
     scheduleSize = schedule.size();
     bool reduceFound = true;
@@ -626,8 +626,8 @@ void Leader::sendData(int idDest)
     msg -> setAssigned_id(idDest);
     
     // Generate a random dimension for the array of values
-    int minimum = 20;
-    int maximum = 25;
+    int minimum = 90;
+    int maximum = 95;
     int numElements = minimum + rand() % (maximum - minimum + 1);
 
     dataSize += numElements;
@@ -837,12 +837,16 @@ void Leader::logSimData()
     simtime_t duration = endTime - startTime;
 
     // Write duration to a file
-    fs::path parentDir = fs::path("./Logs") / fs::path(EXPERIMENT_NAME); // The directory where simulation folders are stored
+    std::string logDir = "./Logs";
+    fs::path parentDir = fs::path(logDir) / fs::path(EXPERIMENT_NAME);
     int maxId = -1;
 
     // Ensure the parent directory exists
-    if(!fs::exists(parentDir))
-    {
+	if(!fs::exists(logDir)) {
+		fs::create_directory(logDir);
+	}
+
+    if (!fs::exists(parentDir)) {
         fs::create_directory(parentDir);
     }
 

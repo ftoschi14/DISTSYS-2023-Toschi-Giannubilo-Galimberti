@@ -20,7 +20,7 @@
 #include "BatchLoader.h"
 #include "InsertManager.h"
 
-#define EXPERIMENT_NAME "Increasing_Batch_Size"
+#define EXPERIMENT_NAME "Increasing_Number_of_Data"
 
 #define LEADER_PORT 0
 
@@ -1221,10 +1221,15 @@ std::string Worker::getParentOperation(const std::string& op) {
 void Worker::logSimData() {
     // Write duration to a file
 
-    fs::path parentDir = fs::path("./Logs") / fs::path(EXPERIMENT_NAME); // The directory where simulation folders are stored
-    int maxId = -1;
+    std::string logDir = "./Logs";
+    fs::path parentDir = fs::path(logDir) / fs::path(EXPERIMENT_NAME);
+	int maxId = -1;
 
     // Ensure the parent directory exists
+	if(!fs::exists(logDir)) {
+		fs::create_directory(logDir);
+	}
+
     if (!fs::exists(parentDir)) {
         fs::create_directory(parentDir);
     }
