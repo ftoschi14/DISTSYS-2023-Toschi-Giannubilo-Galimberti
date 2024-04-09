@@ -93,6 +93,7 @@ private:
 	bool reduceLast;
 	bool localBatch;
 	bool previousLocal;
+	bool idle;
 
 	// General Elaboration Information
 	bool finishedLocalElaboration;
@@ -194,6 +195,7 @@ void Worker::initialize(){
 	changeKeyReceived = 0;
 
 	waitingForInsert = false;
+	idle = false;
 
 	// Current Batch Elaboration information
 	currentScheduleStep = 0;
@@ -394,6 +396,8 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
 
     // Logging code (IGNORE)
     begin_elab = simTime();
+    begin_batch = simTime();
+    begin_op = simTime();
     // End of logging code
 
 	scheduleAt(simTime(), nextStepMsg);
@@ -408,8 +412,10 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 	// Check if it is an ACK or an insertion to me (workerID)
 	if(msg->getAck()){
 		// Look for corresponding reqID and cancel timeout
-		cancelEvent(insertTimeoutMsg);
-		delete unstableMessage;
+		if(insertTimeoutMsg != nullptr && insertTimeoutMsg->isScheduled()) {
+			cancelEvent(insertTimeoutMsg);
+			delete unstableMessage;
+		}
 
 		if(nextStepMsg->isScheduled()) {
 			cancelEvent(nextStepMsg);
@@ -448,6 +454,13 @@ void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *
 	if(nextStepMsg != nullptr && nextStepMsg->isScheduled()) {
 	cancelEvent(nextStepMsg);
 	}
+	
+	// Logging
+	if(idle) {
+		begin_batch = simTime();
+		begin_op = simTime();
+	}
+	// End of logging
 	
 	double delay = calculateDelay("finish");
 	scheduleAt(simTime() + delay , nextStepMsg);
@@ -497,6 +510,11 @@ void Worker::handleRestartMessage(RestartMessage *msg){
 
 	double delay = calculateDelay("restart");
 
+	// Logging
+    begin_batch = simTime();
+    begin_op = simTime();
+	// End of logging
+	
 	scheduleAt(simTime() + delay, nextStepMsg);
 	return;
 }
@@ -587,6 +605,7 @@ void Worker::processStep()
 
 		if(finishNoticeSent && finishedPartialCK && !checkChangeKeyReceived) {
 			std::cout<<"Worker " << workerId << " - Temporarily finished elaborating ChangeKeys - Status: Idle\n\n";
+			idle = true;
 			return;
 		}
 
@@ -611,6 +630,7 @@ void Worker::processStep()
 			checkChangeKeyAckMsg->setChangeKeySent(changeKeySent);
 			send(checkChangeKeyAckMsg, "out", 0);
 			EV<<"\nChangeKey checked at worker: "<<workerId<<"\n\n";
+			idle = true;			
 			return;
 		}
 
@@ -665,16 +685,11 @@ void Worker::processStep()
 		simtime_t duration = end_op - begin_op;
 
 		per_op_exec_times[getParentOperation(schedule[currentScheduleStep])].push_back(duration);
+		begin_op = simTime(); // Reset timer for next operation		
 
 		// End of Logging code
 
 		currentScheduleStep++;
-
-		// Logging code (IGNORE)
-
-		begin_op = simTime();
-
-		// End of Logging code
 
 		if(reduceLast && currentScheduleStep == schedule.size() - 1) {
 			EV << "Entering reduce\n\n";
@@ -981,6 +996,7 @@ void Worker::deallocatingMemory(){
 	finishedLocalElaboration = false;
 	finishedPartialCK = false;
 	waitingForInsert = false;
+	idle = false;
 
 	// ChangeKey protocol
 	changeKeySent = 0;
@@ -1158,6 +1174,11 @@ void Worker::convertParameters() {
 	lognormal_params["load"] = calculateDistributionParams(BATCH_LOAD_TIME_AVG, BATCH_LOAD_TIME_STD);
 }
 
+/*
+* Given mean, stddev, calculate the corresponding parameters of a lognormal distribution.
+* We need this function because the parameters of a lognormal don't directly define its mean/stddev but they define
+* the underlying normal distrbution's parameters.
+*/
 std::pair<double, double> Worker::calculateDistributionParams(double m, double s) {
 	double mu = log((m * m) / sqrt(s * s + m * m));
     double sigma = sqrt(log((s * s) / (m * m) + 1));
