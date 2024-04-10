@@ -32,15 +32,15 @@
 #define FINISH_EXEC_DELAY_AVG 0.0002
 #define FINISH_EXEC_DELAY_STD 0.001
 
-#define MAP_EXEC_TIME_AVG 0.001
-#define MAP_EXEC_TIME_STD 0.003
+#define MAP_EXEC_TIME_AVG 0.003
+#define MAP_EXEC_TIME_STD 0.001
 
-#define FILTER_EXEC_TIME_AVG 0.001
-#define FILTER_EXEC_TIME_STD 0.003
+#define FILTER_EXEC_TIME_AVG 0.003
+#define FILTER_EXEC_TIME_STD 0.001
 
 // (Fast when local)
-#define CHANGEKEY_EXEC_TIME_AVG 0.001
-#define CHANGEKEY_EXEC_TIME_STD 0.003
+#define CHANGEKEY_EXEC_TIME_AVG 0.003
+#define CHANGEKEY_EXEC_TIME_STD 0.001
 
 // ----- Medium-duration operations -----
 
@@ -190,6 +190,7 @@ protected:
 Define_Module(Worker);
 
 void Worker::initialize(){
+	// Initializing variables to avoid segfaults
 	changeKeyCtr = 0;
 	changeKeySent = 0;
 	changeKeyReceived = 0;
@@ -214,7 +215,7 @@ void Worker::initialize(){
 	failureProbability = (par("failureProbability").intValue()) / 1000.0;
 	numWorkers = par("numWorkers").intValue();
 
-	changeKeyProbability = 0.85;
+	changeKeyProbability = 0.4;
 	insertTimeout = 0.5; //500 ms
 	localBatch = true;
 	failed = false;
@@ -252,20 +253,22 @@ void Worker::finish(){
 }
 
 void Worker::handleMessage(cMessage *msg){
-	//std::cout << "Worker " << workerId << " received a message - Scheduled at: " << msg->getArrivalTime() << "\n";
+
+	// Segment for data processing self-message
 	if(msg == nextStepMsg) {
 		processStep();
 		return;
 	}
 
+    // Segment for ping response self-message
     if(msg == pingResEvent){
     	handlePingMessage(msg);
     	return;
     }
 
-	/* Timeout Message chunk
-	*  Get the context pointer, if not null it should correspond to a request ID
-	*  Get the corresponding timeout and insertMsg, re-send it and re-schedule a timeout.
+	/* 
+	*  Timeout Message segment:
+	*  Try re-sending an unstable DataInsert message and re-start a timeout.
 	*/
 	if(msg == insertTimeoutMsg) {
 		// Get the worker ID from the message
@@ -278,6 +281,10 @@ void Worker::handleMessage(cMessage *msg){
         return;
 	}
 
+	/*
+	*	Ping Message segment:
+	*	Schedule a delayed response to the ping message
+	*/
 	PingMessage *pingMsg = dynamic_cast<PingMessage *>(msg);
 	if(pingMsg != nullptr){
 
@@ -299,6 +306,7 @@ void Worker::handleMessage(cMessage *msg){
 		return;
 	}
 
+	// Setup Message segment
 	SetupMessage *setupMsg = dynamic_cast<SetupMessage *>(msg);
     if(setupMsg != nullptr){
         // Successfully cast to SetupMessage, handle it
@@ -307,6 +315,7 @@ void Worker::handleMessage(cMessage *msg){
         return;
     }
 
+	// Schedule Message segment	
 	ScheduleMessage *scheduleMsg = dynamic_cast<ScheduleMessage *>(msg);
     if (scheduleMsg != nullptr) {
         // Successfully cast to ScheduleMessage, handle it
@@ -314,7 +323,8 @@ void Worker::handleMessage(cMessage *msg){
     	delete msg;
         return;
     }
-    // DataInsertMessage (Could be either to insert here, or an ACK)
+    
+    // Data Insert Message segment (Insert/ACK)
     DataInsertMessage *dataInsertMsg = dynamic_cast<DataInsertMessage *>(msg);
     if(dataInsertMsg != nullptr){
     	//Successfully cast to DataInsertMessage, handle it
@@ -322,6 +332,7 @@ void Worker::handleMessage(cMessage *msg){
     	return;
     }
 
+	// FinishLocalElaboration Message segment (Check for local ChangeKeys)
 	FinishLocalElaborationMessage *finishLocalMsg = dynamic_cast<FinishLocalElaborationMessage *>(msg);
 	if(finishLocalMsg != nullptr){
 		EV<<"Start executing the remain schedule for the latecomers change key data\n";
@@ -330,6 +341,7 @@ void Worker::handleMessage(cMessage *msg){
 		return;
 	}
 
+    // Finish Simulation message segment
     FinishSimMessage *finishSimMsg = dynamic_cast<FinishSimMessage *>(msg);
 	if(finishSimMsg != nullptr){
 		handleFinishSimMessage(finishSimMsg);
@@ -337,6 +349,7 @@ void Worker::handleMessage(cMessage *msg){
 		return;
 	}
 
+	// Restart after failure message segment
 	RestartMessage *restartMsg = dynamic_cast<RestartMessage *>(msg);
     if(restartMsg != nullptr) {
     	// Successfully cast to RestartMessage, handle it
@@ -346,6 +359,9 @@ void Worker::handleMessage(cMessage *msg){
     }
 }
 
+/*
+*	Function to reply to a ping message coming from the Leader node
+*/
 void Worker::handlePingMessage(cMessage *msg){
 	if(failed) {
 		return;
@@ -356,6 +372,12 @@ void Worker::handlePingMessage(cMessage *msg){
 	return;
 }
 
+/*
+*	Function to handle receiving the SetupMessage from leader, includes:
+*     - Copying WorkerID
+*	  - Copying Schedule + Parameters
+*	  - Initialization of BatchLoader and InsertManager
+*/
 void Worker::handleSetupMessage(SetupMessage *msg){
 	workerId = msg->getAssigned_id();
 
@@ -511,8 +533,8 @@ void Worker::handleRestartMessage(RestartMessage *msg){
 	double delay = calculateDelay("restart");
 
 	// Logging
-    begin_batch = simTime();
-    begin_op = simTime();
+    begin_batch = simTime() + delay;
+    begin_op = simTime() + delay;
 	// End of logging
 	
 	scheduleAt(simTime() + delay, nextStepMsg);
@@ -705,10 +727,15 @@ void Worker::processStep()
 }
 
 void Worker::processReduce(){
+	if(failureDetection()){
+		failed = true;
+		std::cout<<"FAILURE DETECTED AT WORKER: "<<workerId<<", deallocating memory\n";
+		deallocatingMemory();
+		return;
+	}
+	
 	int batchRes = reduce({data[currentScheduleStep].begin(), data[currentScheduleStep].end()});
-
-	std::cout << tmpReduce << " + " << batchRes << " = " << (tmpReduce + batchRes) << "\n";
-
+	//std::cout << tmpReduce << " + " << batchRes << " = " << (tmpReduce + batchRes) << "\n";
 	tmpReduce = tmpReduce + batchRes;
 
 	data[currentScheduleStep].clear();
@@ -948,24 +975,6 @@ void Worker::loadChangeKeyData(){
 
 void Worker::deallocatingMemory(){
 	std::cout << "Worker " << workerId << " failing..." << "\n";
-
-	// Logging code (IGNORE)
-
-	simtime_t end_op = simTime();
-	simtime_t end_batch = simTime();
-
-	simtime_t op_duration = end_op - begin_op;
-	simtime_t batch_duration = end_batch - begin_batch;
-
-	if(op_duration > 0){
-		per_op_exec_times[getParentOperation(schedule[currentScheduleStep])].push_back(op_duration);
-	}
-	
-	if(batch_duration > 0){
-		per_schedule_exec_times.push_back(batch_duration);
-	}
-
-	// End of Logging code
 
 	failed = true;
 
