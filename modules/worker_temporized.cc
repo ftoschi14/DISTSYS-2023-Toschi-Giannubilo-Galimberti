@@ -20,7 +20,7 @@
 #include "BatchLoader.h"
 #include "InsertManager.h"
 
-#define EXPERIMENT_NAME "Increasing_Number_of_Data"
+#define EXPERIMENT_NAME "Increasing_Failure_Probability"
 
 #define LEADER_PORT 0
 
@@ -44,11 +44,11 @@
 
 // ----- Medium-duration operations -----
 
-#define REDUCE_EXEC_TIME_AVG 0.01
-#define REDUCE_EXEC_TIME_STD 0.005
+#define REDUCE_EXEC_TIME_AVG 0.03
+#define REDUCE_EXEC_TIME_STD 0.01
 
-#define BATCH_LOAD_TIME_AVG 0.01
-#define BATCH_LOAD_TIME_STD 0.005
+#define BATCH_LOAD_TIME_AVG 0.03
+#define BATCH_LOAD_TIME_STD 0.01
 
 // ----- Slow operations -----
 #define RESTART_DELAY_AVG 1.5
@@ -157,7 +157,7 @@ protected:
 	void initializeDataModules();
 	void loadPartialResults();
 	void loadChangeKeyData();
-	bool failureDetection();
+	bool failureDetection(int factor = 1);
 	void deallocatingMemory();
 
 	// ChangeKey Remote Data Insertion
@@ -727,7 +727,12 @@ void Worker::processStep()
 }
 
 void Worker::processReduce(){
-	if(failureDetection()){
+	if(failureDetection(batchSize*schedule.size()/4)){ //Simulate as if it was distributed like the other 3 operations
+		// Logging (ignore - adding artificial delay)
+		double delay = calculateDelay(schedule[currentScheduleStep]);
+		int reductionFactor = (rand() % (batchSize)) + 1;
+		begin_op -= (delay/reductionFactor); // Divide delay by random number in [1, batchSize] to simulate failing in the middle of the operation
+		// End of logging
 		failed = true;
 		std::cout<<"FAILURE DETECTED AT WORKER: "<<workerId<<", deallocating memory\n";
 		deallocatingMemory();
@@ -909,8 +914,8 @@ void Worker::loadSavedResult() {
 	}
 }
 
-bool Worker::failureDetection(){
-	int res = bernoulli(failureProbability);
+bool Worker::failureDetection(int factor){
+	int res = bernoulli(failureProbability * factor);
 	if(res){
 		return true;
 	}
