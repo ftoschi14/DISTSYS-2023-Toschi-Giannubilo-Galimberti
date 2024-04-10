@@ -975,6 +975,24 @@ void Worker::loadChangeKeyData(){
 
 void Worker::deallocatingMemory(){
 	std::cout << "Worker " << workerId << " failing..." << "\n";
+	
+	// Logging code (IGNORE)
+
+	simtime_t end_op = simTime();
+	simtime_t end_batch = simTime();
+
+	simtime_t op_duration = end_op - begin_op;
+	simtime_t batch_duration = end_batch - begin_batch;
+
+	if(op_duration > 0){
+		per_op_exec_times[getParentOperation(schedule[currentScheduleStep])].push_back(op_duration);
+	}
+	
+	if(batch_duration > 0){
+		per_schedule_exec_times.push_back(batch_duration);
+	}
+
+	// End of Logging code
 
 	failed = true;
 
