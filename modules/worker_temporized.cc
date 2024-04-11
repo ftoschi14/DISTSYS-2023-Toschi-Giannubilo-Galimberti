@@ -781,7 +781,7 @@ void Worker::loadNextBatch(){
 			}
 		}
 	}
-	localBatch = !localBatch && !finishedLocalElaboration; // Alternates only if local elaboration is not finished
+	localBatch = !finishedLocalElaboration; // Switch to CK only when local data is finished
 	currentScheduleStep = 0;
 }
 
