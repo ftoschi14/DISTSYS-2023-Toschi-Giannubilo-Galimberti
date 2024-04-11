@@ -415,6 +415,8 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
     reduceLast = (schedule.back() == "reduce");
 
     loadNextBatch(); // Load first batch
+    
+    persistCKCounter(); // Store first batch info
 
     // Logging code (IGNORE)
     begin_elab = simTime();
