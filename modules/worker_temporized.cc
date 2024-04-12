@@ -47,8 +47,10 @@
 #define REDUCE_EXEC_TIME_AVG 0.03
 #define REDUCE_EXEC_TIME_STD 0.01
 
-#define BATCH_LOAD_TIME_AVG 0.03
-#define BATCH_LOAD_TIME_STD 0.01
+// ----- Medium to slow-duration operations -----
+
+#define BATCH_LOAD_TIME_AVG 0.3
+#define BATCH_LOAD_TIME_STD 0.1
 
 // ----- Slow operations -----
 #define RESTART_DELAY_AVG 1.5
@@ -189,6 +191,13 @@ protected:
 
 Define_Module(Worker);
 
+/*
+* Initializes base worker information, sets parameters for:
+*	- Failure probability (x/1000)
+*	- ChangeKey probability
+*	- DataInsert timeout duration
+*	- Conversion of parameters for lognormal distribution (Check function for more details)
+*/
 void Worker::initialize(){
 	// Initializing variables to avoid segfaults
 	changeKeyCtr = 0;
@@ -220,7 +229,7 @@ void Worker::initialize(){
 	localBatch = true;
 	failed = false;
 
-	convertParameters();
+	convertParameters(); //Conversion of delay parameters for the lognormal distribution
 
 	nextStepMsg = new NextStepMessage("NextStep");
 	pingResEvent = new PingResMessage("PingRes");
@@ -228,6 +237,9 @@ void Worker::initialize(){
 	insertTimeoutMsg = new cMessage("Timeout");
 }
 
+/*
+* Deallocates worker variables, prints debug information and persists logged simulation data.
+*/
 void Worker::finish(){
 	std::cout << "Worker " << workerId << " finished with value: ";
 	if(reduceLast){
@@ -252,6 +264,10 @@ void Worker::finish(){
 	logSimData();
 }
 
+/*
+* Handles incoming messages/self-messages by casting to their respective type, and
+* calling the function responsible for the corresponding task.
+*/
 void Worker::handleMessage(cMessage *msg){
 
 	// Segment for data processing self-message
@@ -287,14 +303,13 @@ void Worker::handleMessage(cMessage *msg){
 	*/
 	PingMessage *pingMsg = dynamic_cast<PingMessage *>(msg);
 	if(pingMsg != nullptr){
-
+		delete msg;		
+		// If the worker has failed, do not reply
 		if(failed){
-			delete msg;
 			return;
 		}
-
-		delete msg;
-
+		
+		// 
 		if(pingResEvent != nullptr && pingResEvent->isScheduled()){
 			cancelEvent(pingResEvent);
 		}
@@ -373,24 +388,27 @@ void Worker::handlePingMessage(cMessage *msg){
 }
 
 /*
-*	Function to handle receiving the SetupMessage from leader, includes:
-*     - Copying WorkerID
-*	  - Copying Schedule + Parameters
-*	  - Initialization of BatchLoader and InsertManager
-*/
+ * Handles the setup message received from the leader.
+ * This function performs several tasks:
+ *   - It sets the worker ID using the assigned ID from the message.
+ *   - It initializes necessary data modules.
+ *   - Data received with the setup message is persisted to a file.
+ * 
+ * Parameters:
+ *   - msg: A pointer to the SetupMessage containing initialization data.
+ */
 void Worker::handleSetupMessage(SetupMessage *msg){
-	workerId = msg->getAssigned_id();
+	workerId = msg->getAssigned_id(); // Set workerID from the message
 
-	if(par("id").intValue() == -1){ // If the ID was not previously set
+	if(par("id").intValue() == -1){ // Set ID param
 		par("id") = workerId;
 	}
 
-	int dataSize = msg->getDataArraySize();
+	int dataSize = msg->getDataArraySize(); // Get the number of data items
 
 	//Persisting data on file
 	folder = "Data/Worker_" + std::to_string(workerId) + "/";
 	std::ofstream data_file;
-
 	fileName = folder + "data.csv";
 	data_file.open(fileName);
 
@@ -401,22 +419,35 @@ void Worker::handleSetupMessage(SetupMessage *msg){
 
 	data_file.close();
 
+	// Initialize BatchLoader and InsertManager
 	initializeDataModules();
 }
 
+/*
+ * Handles the schedule message received from the leader.
+ * This function performs several tasks:
+ *   - Copy the schedule and parameters from the message
+ *	 - Load the first batch of local data
+ *	 - Persist initial info on type of batch
+ *	 - Schedule the first nextStep message to begin elaboration
+ * 
+ * Parameters:
+ *   - msg: A pointer to the ScheduleMessage containing schedule initialization data.
+ */
 void Worker::handleScheduleMessage(ScheduleMessage *msg){
-	
+	// Get size and copy operations and parameters
     int scheduleSize = msg->getScheduleArraySize();
 
     for(int i=0; i<scheduleSize; i++){
         schedule.push_back(msg->getSchedule(i)) ;
 		parameters.push_back(msg->getParameters(i));
     }
+    // Set helper flag
     reduceLast = (schedule.back() == "reduce");
 
     loadNextBatch(); // Load first batch
     
-    persistCKCounter(); // Store first batch info
+    persistCKCounter(); // Persist first batch info
 
     // Logging code (IGNORE)
     begin_elab = simTime();
@@ -424,10 +455,28 @@ void Worker::handleScheduleMessage(ScheduleMessage *msg){
     begin_op = simTime();
     // End of logging code
 
+	// Schedule first message
 	scheduleAt(simTime(), nextStepMsg);
 }
 
+/*
+ * Handles a DataInsert message received from another Worker.
+ * This function performs two tasks, based on the type of DataInsert (ACK/Insert):
+ *  If the message is an ACK: 
+ *	 - Cancel the scheduled timeout
+ *	 - Increment changeKeySent and persist counters
+ *	 - Schedule nextStep and unblock execution
+ *
+ *	If the message is an Insertion:
+ *	 - Get information on the sender and pass it to InsertManager
+ *	 - Reply with ACK
+ *	 - Increment changeKeyReceived and persist counters
+ * 
+ * Parameters:
+ *   - msg: A pointer to the DataInsertMessage containing a data point and info on the exchange.
+ */
 void Worker::handleDataInsertMessage(DataInsertMessage *msg){
+	// Drop the message if the worker has failed
 	if(failed){
 		EV << "Received DataInsert - dropped" << "\n";
 		delete msg;
@@ -435,27 +484,34 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 	}
 	// Check if it is an ACK or an insertion to me (workerID)
 	if(msg->getAck()){
-		// Look for corresponding reqID and cancel timeout
+		// Cancel the timeout message
 		if(insertTimeoutMsg != nullptr && insertTimeoutMsg->isScheduled()) {
 			cancelEvent(insertTimeoutMsg);
-			delete unstableMessage;
 		}
-
+		// Delete clone of DataInsertMessage
+		delete unstableMessage;
+		
+		// Unblock execution and re-schedule a nextStep
 		if(nextStepMsg->isScheduled()) {
 			cancelEvent(nextStepMsg);
 		}
 
 		scheduleAt(simTime(), nextStepMsg);
 		waitingForInsert = false;
+		
+		// Increment sent counter and persist
 		changeKeySent++;
 		persistCKSentReceived();
 	} else {
-		// Insert new data point into data vector
+		// Handle data insertion
+		// Get sender info from the arrival gate
 		int gateIndex = msg->getArrivalGate()->getIndex();
 		int senderID = getInboundWorkerID(gateIndex);
-
+		
+		// Try to insert this value into InsertManager
 		insertManager->insertValue(senderID, msg->getReqID(), msg->getScheduleStep(), msg->getData());
 
+		// Reset flag (If this new data was inserted, I need to elaborate it)
 		finishedPartialCK = false;
 		// Send back ACK after insertion
 		DataInsertMessage* insertMsg = new DataInsertMessage();
@@ -463,18 +519,36 @@ void Worker::handleDataInsertMessage(DataInsertMessage *msg){
 		insertMsg->setAck(true);
 
 		send(insertMsg, "out", gateIndex);
+		
+		// Increment received counter and persist
 		changeKeyReceived++;
 		persistCKSentReceived();
 	}
 	delete msg;
 }
 
+/*
+ * Handles a FinishLocalElaboration message received from the Leader.
+ * This function sets the "checkChangeKeyReceived" flag to true and starts again the execution.
+ * This is used to elaborate any received changeKey after this worker finished the previous batch, to
+ * make sure all data is elaborated.
+ * 
+ * Parameters:
+ *   - msg: A pointer to the FinishLocalElaborationMessage.
+ */
 void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *msg){
+	/*
+	* Set checkChangeKeyReceived flag to true:
+	* Used to recognize when to send the CheckChangeKeyACK message to the Leader
+	*/
 	checkChangeKeyReceived = true;
+	// To continue execution
 	finishedPartialCK = false;
 
+	// If worker is waiting for a DataInsert to be ACKed, do not re-schedule a nextStep
 	if(waitingForInsert && insertTimeoutMsg != nullptr && insertTimeoutMsg->isScheduled()) return;
 
+	// Cancel any scheduled nextStep
 	if(nextStepMsg != nullptr && nextStepMsg->isScheduled()) {
 	cancelEvent(nextStepMsg);
 	}
@@ -486,15 +560,33 @@ void Worker::handleFinishLocalElaborationMessage(FinishLocalElaborationMessage *
 	}
 	// End of logging
 	
+	// Schedule a new nextStep with a small delay to account for the worker switching to the final phase of the elaboration.
 	double delay = calculateDelay("finish");
 	scheduleAt(simTime() + delay , nextStepMsg);
 }
 
+/*
+ * Handles a RestartMessage received from the Leader.
+ * This function performs several tasks:
+ *	 - If the worker has not failed, but has failed to respond to a ping in time, it deallocates memory.
+ *	 - Reset base worker information and data loading modules
+ *	 - Copy schedule and parameter information
+ *	 - Reload previous partial result (If the schedule ends with reduce)
+ *	 - Reload changeKey counters
+ *	 - Load one batch of data
+ *	 - Schedule a nextStep with high delay to account for all these tasks
+ * 
+ * Parameters:
+ *   - msg: A pointer to the RestartMessage.
+ */
 void Worker::handleRestartMessage(RestartMessage *msg){
+	// If the worker has not failed, but didn't respond in time to a ping, it restarts.
 	if(!failed){
 		std::cout << "Worker " << workerId << " received a RestartMessage, but has not failed: Restarting..." << "\n";
 		deallocatingMemory();
 	}
+	
+	//Reload base worker information and data modules
 	failed = false;
 	workerId = msg->getWorkerID();
 	batchSize = par("batchSize").intValue();
@@ -502,7 +594,6 @@ void Worker::handleRestartMessage(RestartMessage *msg){
 	initializeDataModules();
 	
 	// Re-Initialized worker and data modules, now copy schedule and re-start processing
-
 	int scheduleSize = msg->getScheduleArraySize();
 
     for(int i=0; i<scheduleSize; i++){
@@ -512,26 +603,20 @@ void Worker::handleRestartMessage(RestartMessage *msg){
     reduceLast = (schedule.back() == "reduce");
 
     // Load previous partial result
-
 	if(reduceLast) loadPartialResults();
 
+	// Load ChangeKey counters and previous batch type information
 	loadChangeKeyData();
-	/*
-	Adding a integer when saving the change key counter (1 for local data, 0 for change key data) in this way when the changeKeyData are loaded can be retrieved 
-	which batch has to be loaded to continue the elaboration
-
-	if(changeKeyCtr == 1) localBatch = true;
-	else localBatch = false;
-
-	In this way is differentiated the load next batch operation and it doesn't restart always from the change key batch because when restarting the localBatch is 
-	always the opposite
-	*/
+	
+	// Load one batch of data in memory
 	loadNextBatch();
 
+	// Cancel any pre-existing nextStep
 	if(nextStepMsg != nullptr && nextStepMsg->isScheduled()) {
 		cancelEvent(nextStepMsg);
 	}
 
+	// Calculate restart operation delay (high)
 	double delay = calculateDelay("restart");
 
 	// Logging
@@ -539,40 +624,69 @@ void Worker::handleRestartMessage(RestartMessage *msg){
     begin_op = simTime() + delay;
 	// End of logging
 	
+	// Schedule delayed nextStep
 	scheduleAt(simTime() + delay, nextStepMsg);
 	return;
 }
 
+/*
+ * Handles a FinishSimMessage received from the Leader.
+ * This message terminates the simulation.
+ * 
+ * Parameters:
+ *   - msg: A pointer to the FinishSimMessage.
+ */
 void Worker::handleFinishSimMessage(FinishSimMessage *msg){
 	EV<<"\nApplication finished at worker: "<<workerId<<"\n\n";
 }
 
+/*
+ * Initializes the data modules needed to:
+ *	 - Load batches of local data
+ *	 - Load/Insert ChangeKey data
+ */
 void Worker::initializeDataModules() {
+	// File for local data
 	fileName = folder + "data.csv";
 
-	// Instantiate a BatchLoader
+	// Instantiate a BatchLoader (For local data loading)
 	fileProgressName = folder + "progress.txt";
 	loader = new BatchLoader(fileName, fileProgressName, batchSize);
 	
 	// Instantiate an InsertManager
-	std::string insertFilename = folder + "inserted.csv";
-	std::string requestFilename = folder + "requests_log.csv";
-	std::string tempFilename = folder + "ck_batch.csv";
+	std::string insertFilename = folder + "inserted.csv"; // File for inserted data
+	std::string requestFilename = folder + "requests_log.csv"; // File to keep track of inserts from other workers
+	std::string tempFilename = folder + "ck_batch.csv"; // Temp file to store previously loaded CK batch
 	insertManager = new InsertManager(insertFilename, requestFilename, tempFilename, batchSize);
 }
-
+/*
+ * This function performs several tasks related to the elaboration of data points:
+ *	- Check if the current batch has been fully elaborated
+ *		- Persist the result and load the next batch
+ *		- Check if the local elaboration is finished and whether to send a 
+ *		  FinishElaboration/CheckChangeKeyACK to the Leader.
+ *		- Reschedule a nextStep with a delay for loading a batch of data.
+ *	- Take one data point from the current schedule step and process the current operation
+ *		- Decide between moving the data point to the next step, or dropping it (filtered/changed key)
+ *		- Schedule nextStep with delay based on current operation (map/filter/changekey)
+ *	- If data for current step is empty
+ *		- Increment step
+ *		- If we are at the last step and it is a reduce, move to the processReduce() function
+ *		- Else, recursively call this function.
+ */
 void Worker::processStep()
 {
+	// If the worker has failed, do not do anything
 	if(failed)
 	{
 	    EV << "Worker failed!\n";
 	    return;
 	}
 
+	// If the batch is finished
 	if(currentScheduleStep >= schedule.size())
 	{
 		// Logging code (IGNORE)
-
 		simtime_t end_batch = simTime();
 		simtime_t batch_duration = end_batch - begin_batch;
 
@@ -582,41 +696,43 @@ void Worker::processStep()
 		}
 
 		per_schedule_exec_times.push_back(batch_duration);
-
 		// End of Logging code
 
+		// Check whether to persist the reduce, or to just append the current result to the file
 		if(reduceLast) {
 			persistingReduce(tmpReduce);
 		} else {
-			// Handle changeKeys in last schedule step
+			// If a schedule has a ChangeKey at the last step, handle data points at schedule.size() + 1
 			if(data.size() == (schedule.size() + 1) && !data[schedule.size()].empty()) {
 				for(const auto& value : data[schedule.size()]) {
-					tmpResult.push_back(value);
+					tmpResult.push_back(value); // Push points in the result
 				}
-				data[schedule.size()].clear(); // Do this to make the scheduled data empty
+				data[schedule.size()].clear(); // Clear after elaborating
 			}
-
+			// Persist to file (append)
 			persistingResult(tmpResult);
+			// Clear tmp vector
 			tmpResult.clear();
 		} 
 
+		// Save the progress in the elaboration of data
 		if(previousLocal) {
-			loader->saveProgress();
+			loader->saveProgress(); // Persists current lines read
 		} else {
-			insertManager->persistData();
+			insertManager->persistData(); // Clears tmp file
 		}
 
+		// Attempt to load another batch of data, if the elaboration is not finished (local/changekey)
 		while(isScheduleEmpty() && (!finishedLocalElaboration || !finishedPartialCK)){
 			loadNextBatch();
 		}
 
+		// Persist changeKeyCtr, changeKeySent, changeKeyReceived before next batch
 		persistCKCounter();
-
-		//std::cout << "Worker " << workerId << " - Loaded data:" << "\n";
-		//printScheduledData(data);
 		
 		EV<<"Status - Worker " << workerId << " - FinishedLocal: " << finishedLocalElaboration << " - FinishedCK: " << finishedPartialCK << " - CheckCKReceived: " << checkChangeKeyReceived << "\n";
 		
+		// If the worker has finished both local and ChangeKey data (for now), send a FinishLocalElaboration message to the leader
 		if(finishedLocalElaboration && finishedPartialCK && !finishNoticeSent) {
 			EV<<"\nSENDING FINISHED LOCAL ELABORATION WORKER: "<<workerId<<"\n\n";
 			FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
@@ -627,16 +743,22 @@ void Worker::processStep()
 			finishNoticeSent = true;
 		}
 
+		// If the worker has sent the finish notice, and has finished all ChangeKey data, it can idle until:
+		//	a) Receives more ChangeKey data
+		//	b) The leader asks to check ChangeKey data
 		if(finishNoticeSent && finishedPartialCK && !checkChangeKeyReceived) {
 			std::cout<<"Worker " << workerId << " - Temporarily finished elaborating ChangeKeys - Status: Idle\n\n";
 			idle = true;
 			return;
 		}
 
+		// If the worker has sent the finish notice, finished ChangeKey data, and has received a FinishLocal from the leader
+		// It must reply with its current partial result, for the leader to evaluate termination conditions
 		if(finishNoticeSent && finishedPartialCK && checkChangeKeyReceived) {
 			CheckChangeKeyAckMessage* checkChangeKeyAckMsg = new CheckChangeKeyAckMessage();
 			checkChangeKeyAckMsg->setWorkerId(workerId);
 
+			// Insert current partial result in the message
 			if(reduceLast) {
 				checkChangeKeyAckMsg->setPartialRes(tmpReduce);
 			} else {
@@ -650,8 +772,11 @@ void Worker::processStep()
 				}
 				tmpResult.clear();
 			}
+			// Set information on ChangeKeys received and sent
 			checkChangeKeyAckMsg->setChangeKeyReceived(changeKeyReceived);
 			checkChangeKeyAckMsg->setChangeKeySent(changeKeySent);
+			
+			// Send the message and idle
 			send(checkChangeKeyAckMsg, "out", 0);
 			EV<<"\nChangeKey checked at worker: "<<workerId<<"\n\n";
 			idle = true;			
@@ -665,25 +790,33 @@ void Worker::processStep()
 
 		// End of Logging code
 
+		// Schedule a nextStep accounting for batch loading delay (mid-high delay)
 		double delay = calculateDelay("load");
 		scheduleAt(simTime() + delay, nextStepMsg);
 		return;
 	}
 
+	// If there are data to be elaborated in the current schedule step
 	if(!data[currentScheduleStep].empty()){
+		// Take the first data point from the deque
 		int value = data[currentScheduleStep].front();
 		data[currentScheduleStep].pop_front();
 
+		// Apply the current operation (Map/Filter/ChangeKey) to the extracted data point
 		bool result = applyOperation(value);
 
+		// If the operation made the worker crash, return
 		if(failed) return;
 
 		EV << "Result: " << value << "\n";
 
 		/*
-		* 2 Cases in which we add data:
-		*   - To proceed with the schedule
-		*   - If our last operation is not a reduce
+		* Decide what to do with the resuting data point:
+		*	a) If there are more steps in the schedule, move it to the next step's queue
+		*	b) If we are at the end of the schedule, and don't have a reduce, push it to the tmpResult vector
+		*
+		* Note: The 'result' flag is set to true if the data point must continue to be processed by this worker
+		* Else, if it is filtered out, or its key changes, it is set to false
 		*/
 		if(result){
 			if(currentScheduleStep + 1 < schedule.size()){
@@ -693,18 +826,20 @@ void Worker::processStep()
 			}
 		}
 
+		// If the current operation was a ChangeKey, and the data point was sent to another worker,
+		// this worker must wait for the exchange to terminate (ACK from other worker)
 		if(waitingForInsert) return;
 
+		// Schedule the next step delayed based on the current operation
 		double delay = calculateDelay(schedule[currentScheduleStep]);
-		EV<<"Scheduling next step\n";
 		scheduleAt(simTime()+delay, nextStepMsg);
 		EV<<"Scheduled next step\n";
 	} else {
-		EV << "Empty map, finished current step\n\n";
+		// Current step is finished because the queue is empty
+		EV << "Empty queue, finished current step\n\n";
 		std::cout << "Worker " << workerId << " finished step " << currentScheduleStep << " - New step data: \n";
 		
 		// Logging code (IGNORE)
-
 		simtime_t end_op = simTime();
 		simtime_t duration = end_op - begin_op;
 
@@ -712,11 +847,12 @@ void Worker::processStep()
 			per_op_exec_times[getParentOperation(schedule[currentScheduleStep])].push_back(duration);
 		}
 		begin_op = simTime(); // Reset timer for next operation		
-
 		// End of Logging code
 
+		// Increment the schedule step
 		currentScheduleStep++;
 
+		// If this step is the last, and it is a reduce, we move to the processReduce() function
 		if(reduceLast && currentScheduleStep == schedule.size() - 1) {
 			EV << "Entering reduce\n\n";
 			//std::cout << "Worker " << workerId << " reducing: ";
@@ -724,15 +860,26 @@ void Worker::processStep()
 			//std::cout<<"Returning after process reduce\n";
 			return;
 		}
+		
+		// Else, recursively call this function
 		processStep();
 	}
 }
 
+/*
+ * Processes the reduce for the current batch of data
+ *
+ * Note on failure detection: Because the reduce function is called just once per batch, and per schedule,
+ * we adjust the failure probability to be a bit higher to account for this, so, the new probability becomes:
+ * 	batchSize * schedule.size()/4 * baseProbability
+ * Account for each data point in the batch, and increment as if the reduce was distributed like the other operations
+ */
 void Worker::processReduce(){
 	if(failureDetection(batchSize*schedule.size()/4)){ //Simulate as if it was distributed like the other 3 operations
 		// Logging (ignore - adding artificial delay)
 		double delay = calculateDelay(schedule[currentScheduleStep]);
 		int reductionFactor = (rand() % (batchSize)) + 1;
+		// We just count durations, this is just a hack to avoid changing the deallocatingMemory() function
 		begin_op -= (delay/reductionFactor); // Divide delay by random number in [1, batchSize] to simulate failing in the middle of the operation
 		// End of logging
 		failed = true;
@@ -741,12 +888,13 @@ void Worker::processReduce(){
 		return;
 	}
 	
+	// Call the reduce function on the current batch of data
 	int batchRes = reduce({data[currentScheduleStep].begin(), data[currentScheduleStep].end()});
-	//std::cout << tmpReduce << " + " << batchRes << " = " << (tmpReduce + batchRes) << "\n";
-	tmpReduce = tmpReduce + batchRes;
+	tmpReduce = tmpReduce + batchRes; // Increment partial result
 
 	data[currentScheduleStep].clear();
 
+	// Schedule a delayed nextStep due to the Reduce operation
 	double delay = calculateDelay(schedule[currentScheduleStep]);
 	std::cout << "Reduce delay: " << delay << "\n";
 	currentScheduleStep++;
@@ -754,6 +902,9 @@ void Worker::processReduce(){
 	scheduleAt(simTime()+delay, nextStepMsg);
 }
 
+/*
+ * 
+ */
 void Worker::loadNextBatch(){
 	data.clear();
 
