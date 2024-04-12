@@ -20,7 +20,7 @@
 #include "BatchLoader.h"
 #include "InsertManager.h"
 
-#define EXPERIMENT_NAME "Increasing_Failure_Probability"
+#define EXPERIMENT_NAME "Increasing_Batch_Size"
 
 #define LEADER_PORT 0
 
@@ -53,7 +53,7 @@
 #define BATCH_LOAD_TIME_STD 0.1
 
 // ----- Slow operations -----
-#define RESTART_DELAY_AVG 1.5
+#define RESTART_DELAY_AVG 1
 #define RESTART_DELAY_STD 0.2
 
 using namespace omnetpp;
@@ -221,7 +221,7 @@ void Worker::initialize(){
 	std::vector<int> tmpResult = {};
 
 	batchSize = par("batchSize").intValue();
-	failureProbability = (par("failureProbability").intValue()) / 1000.0;
+	failureProbability = (par("failureProbability").doubleValue()) / 1000.0;
 	numWorkers = par("numWorkers").intValue();
 
 	changeKeyProbability = 0.4;
@@ -903,77 +903,119 @@ void Worker::processReduce(){
 }
 
 /*
- * 
+ * Loads the next batch of data in memory.
+ * Batches are loaded in order, first exhausting all local batches, then all ChangeKey batches.
+ * Local batches are handled by BatchLoader
+ * ChangeKey batches are handled by InsertManager
  */
 void Worker::loadNextBatch(){
+	// Clear previous data
 	data.clear();
 
+	// Load a local batch
 	if(localBatch) {
+		// For fault tolerance purpose
 		previousLocal = true;
 		std::cout << "Worker " << workerId << " - Loading local:\n";
+		// Get a batch from BatchLoader
 		std::vector<int> batch = loader->loadBatch();
+		
+		// If the loaded batch is empty, it means we reached the end of the file
 		if(batch.empty()){
+			// Update FinishedLocal flag
 			finishedLocalElaboration = true;
 			localBatch = false;
 			//std::cout << "Finished local, switching to ck" << "\n";
 		} else {
+			// Else, insert data in the first step of the schedule
         	data[0].insert(data[0].end(), batch.begin(), batch.end());
 		}
 	} else {
+		// Load a changeKey batch
+		// For fault tolerance purpose
 		previousLocal = false;
 		EV << "Loading CK...\n";
+		
+		// Get a batch from InsertManager - Format is: <scheduleStep, [data]>
 		std::map<int, std::vector<int>> ckBatch = insertManager->getBatch();
 
+		// If the batch is empty, it means this worker currently finished elaboration
 		if(ckBatch.empty()){
 			finishedPartialCK = true;
 			EV << "CK data empty" << "\n";
 		} else {
 			EV << "\n\nCK not empty";
+			// Else, insert data in the corresponding schedule step
 			for(int i=0; i < ckBatch.size(); i++) {
 				data[i].insert(data[i].end(), ckBatch[i].begin(), ckBatch[i].end());
 			}
 		}
 	}
-	localBatch = !finishedLocalElaboration; // Switch to CK only when local data is finished
-	currentScheduleStep = 0;
+	localBatch = !finishedLocalElaboration; // Switch to ChangeKey data only when local data is finished
+	currentScheduleStep = 0; // Reset step
 }
 
+/*
+* Applies the operation at the current schedule step to the data point passed.
+*
+* Parameters:
+*   - value: A pointer to the data point to be elaborated.
+*
+* Returns:
+*   - true if the elaborated data point must continue in the schedule.
+*   - false if the data point is filtered, or sent to another worker via the ChangeKey function.
+*/
 bool Worker::applyOperation(int& value){
+	// Simulate crash probability
 	if(failureDetection()){
 		failed = true;
 		std::cout<<"FAILURE DETECTED AT WORKER: "<<workerId<<", deallocating memory\n";
 		deallocatingMemory();
 		return false;
 	}
-
 	
+	// Get current operation and respective parameter
 	const std::string& operation = schedule[currentScheduleStep];
 	const int& parameter = parameters[currentScheduleStep];
 
+	// MAP segment
 	if(operation == "add" || operation == "sub" || operation == "mul" || operation == "div") {
 		int res = map(operation, parameter, value);
 		std::cout << "Map result: " << res << "\n";
 		value = res;
 
 		return true;
-	} else if(operation == "lt" || operation == "gt" || operation == "le" || operation == "ge") {
+	} 
+	// FILTER segment
+	else if(operation == "lt" || operation == "gt" || operation == "le" || operation == "ge") {
 		return filter(operation, parameter, value);
 
-	} else if(operation == "changekey") {
+	} 
+	// CHANGEKEY segment
+	else if(operation == "changekey") {
+		// Simulate probability of changing key
 		int newKey = changeKey(value, changeKeyProbability);
-		//std::cout<<"New key: "<<newKey<<"\n";
+		
+		// ChangeKey is executed if the key returned by the function is valid
 		if(newKey != -1) {
         	std::cout << "Changing Key: " << workerId << " -> " << newKey << " for value: "<<value<<"\n";
-        	sendData(newKey, value, currentScheduleStep + 1); // 'i' == Schedule step
+        	// Send the current data point to worker corresponding to 'newKey'
+        	// Current data point will be inserted at schedule step + 1 to account for this current Changekey operation
+        	sendData(newKey, value, currentScheduleStep + 1);
 
+        	// Return false because this data point no longer belongs to this worker
         	return false;
         }
 		
+        // Return true because the data point did not receive a new key, and must continue elaboration in this worker.
         return true;
 	}
 	return false;
 }
 
+/*
+* 
+*/
 float Worker::calculateDelay(const std::string& operation){
 	double delay = lognormal(lognormal_params[getParentOperation(operation)].first, lognormal_params[getParentOperation(operation)].second);
 	std::cout << "OP:" << operation << "- delay: " << delay << "\n";
