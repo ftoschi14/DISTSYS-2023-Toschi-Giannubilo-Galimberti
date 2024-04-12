@@ -659,19 +659,34 @@ void Worker::initializeDataModules() {
 	std::string tempFilename = folder + "ck_batch.csv"; // Temp file to store previously loaded CK batch
 	insertManager = new InsertManager(insertFilename, requestFilename, tempFilename, batchSize);
 }
-
+/*
+ * This function performs several tasks related to the elaboration of data points:
+ *	- Check if the current batch has been fully elaborated
+ *		- Persist the result and load the next batch
+ *		- Check if the local elaboration is finished and whether to send a 
+ *		  FinishElaboration/CheckChangeKeyACK to the Leader.
+ *		- Reschedule a nextStep with a delay for loading a batch of data.
+ *	- Take one data point from the current schedule step and process the current operation
+ *		- Decide between moving the data point to the next step, or dropping it (filtered/changed key)
+ *		- Schedule nextStep with delay based on current operation (map/filter/changekey)
+ *	- If data for current step is empty
+ *		- Increment step
+ *		- If we are at the last step and it is a reduce, move to the processReduce() function
+ *		- Else, recursively call this function.
+ */
 void Worker::processStep()
 {
+	// If the worker has failed, do not do anything
 	if(failed)
 	{
 	    EV << "Worker failed!\n";
 	    return;
 	}
 
+	// If the batch is finished
 	if(currentScheduleStep >= schedule.size())
 	{
 		// Logging code (IGNORE)
-
 		simtime_t end_batch = simTime();
 		simtime_t batch_duration = end_batch - begin_batch;
 
@@ -681,41 +696,43 @@ void Worker::processStep()
 		}
 
 		per_schedule_exec_times.push_back(batch_duration);
-
 		// End of Logging code
 
+		// Check whether to persist the reduce, or to just append the current result to the file
 		if(reduceLast) {
 			persistingReduce(tmpReduce);
 		} else {
-			// Handle changeKeys in last schedule step
+			// If a schedule has a ChangeKey at the last step, handle data points at schedule.size() + 1
 			if(data.size() == (schedule.size() + 1) && !data[schedule.size()].empty()) {
 				for(const auto& value : data[schedule.size()]) {
-					tmpResult.push_back(value);
+					tmpResult.push_back(value); // Push points in the result
 				}
-				data[schedule.size()].clear(); // Do this to make the scheduled data empty
+				data[schedule.size()].clear(); // Clear after elaborating
 			}
-
+			// Persist to file (append)
 			persistingResult(tmpResult);
+			// Clear tmp vector
 			tmpResult.clear();
 		} 
 
+		// Save the progress in the elaboration of data
 		if(previousLocal) {
-			loader->saveProgress();
+			loader->saveProgress(); // Persists current lines read
 		} else {
-			insertManager->persistData();
+			insertManager->persistData(); // Clears tmp file
 		}
 
+		// Attempt to load another batch of data, if the elaboration is not finished (local/changekey)
 		while(isScheduleEmpty() && (!finishedLocalElaboration || !finishedPartialCK)){
 			loadNextBatch();
 		}
 
+		// Persist changeKeyCtr, changeKeySent, changeKeyReceived before next batch
 		persistCKCounter();
-
-		//std::cout << "Worker " << workerId << " - Loaded data:" << "\n";
-		//printScheduledData(data);
 		
 		EV<<"Status - Worker " << workerId << " - FinishedLocal: " << finishedLocalElaboration << " - FinishedCK: " << finishedPartialCK << " - CheckCKReceived: " << checkChangeKeyReceived << "\n";
 		
+		// If the worker has finished both local and ChangeKey data (for now), send a FinishLocalElaboration message to the leader
 		if(finishedLocalElaboration && finishedPartialCK && !finishNoticeSent) {
 			EV<<"\nSENDING FINISHED LOCAL ELABORATION WORKER: "<<workerId<<"\n\n";
 			FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
@@ -726,16 +743,22 @@ void Worker::processStep()
 			finishNoticeSent = true;
 		}
 
+		// If the worker has sent the finish notice, and has finished all ChangeKey data, it can idle until:
+		//	a) Receives more ChangeKey data
+		//	b) The leader asks to check ChangeKey data
 		if(finishNoticeSent && finishedPartialCK && !checkChangeKeyReceived) {
 			std::cout<<"Worker " << workerId << " - Temporarily finished elaborating ChangeKeys - Status: Idle\n\n";
 			idle = true;
 			return;
 		}
 
+		// If the worker has sent the finish notice, finished ChangeKey data, and has received a FinishLocal from the leader
+		// It must reply with its current partial result, for the leader to evaluate termination conditions
 		if(finishNoticeSent && finishedPartialCK && checkChangeKeyReceived) {
 			CheckChangeKeyAckMessage* checkChangeKeyAckMsg = new CheckChangeKeyAckMessage();
 			checkChangeKeyAckMsg->setWorkerId(workerId);
 
+			// Insert current partial result in the message
 			if(reduceLast) {
 				checkChangeKeyAckMsg->setPartialRes(tmpReduce);
 			} else {
@@ -749,8 +772,11 @@ void Worker::processStep()
 				}
 				tmpResult.clear();
 			}
+			// Set information on ChangeKeys received and sent
 			checkChangeKeyAckMsg->setChangeKeyReceived(changeKeyReceived);
 			checkChangeKeyAckMsg->setChangeKeySent(changeKeySent);
+			
+			// Send the message and idle
 			send(checkChangeKeyAckMsg, "out", 0);
 			EV<<"\nChangeKey checked at worker: "<<workerId<<"\n\n";
 			idle = true;			
@@ -764,25 +790,33 @@ void Worker::processStep()
 
 		// End of Logging code
 
+		// Schedule a nextStep accounting for batch loading delay (mid-high delay)
 		double delay = calculateDelay("load");
 		scheduleAt(simTime() + delay, nextStepMsg);
 		return;
 	}
 
+	// If there are data to be elaborated in the current schedule step
 	if(!data[currentScheduleStep].empty()){
+		// Take the first data point from the deque
 		int value = data[currentScheduleStep].front();
 		data[currentScheduleStep].pop_front();
 
+		// Apply the current operation (Map/Filter/ChangeKey) to the extracted data point
 		bool result = applyOperation(value);
 
+		// If the operation made the worker crash, return
 		if(failed) return;
 
 		EV << "Result: " << value << "\n";
 
 		/*
-		* 2 Cases in which we add data:
-		*   - To proceed with the schedule
-		*   - If our last operation is not a reduce
+		* Decide what to do with the resuting data point:
+		*	a) If there are more steps in the schedule, move it to the next step's queue
+		*	b) If we are at the end of the schedule, and don't have a reduce, push it to the tmpResult vector
+		*
+		* Note: The 'result' flag is set to true if the data point must continue to be processed by this worker
+		* Else, if it is filtered out, or its key changes, it is set to false
 		*/
 		if(result){
 			if(currentScheduleStep + 1 < schedule.size()){
@@ -792,18 +826,20 @@ void Worker::processStep()
 			}
 		}
 
+		// If the current operation was a ChangeKey, and the data point was sent to another worker,
+		// this worker must wait for the exchange to terminate (ACK from other worker)
 		if(waitingForInsert) return;
 
+		// Schedule the next step delayed based on the current operation
 		double delay = calculateDelay(schedule[currentScheduleStep]);
-		EV<<"Scheduling next step\n";
 		scheduleAt(simTime()+delay, nextStepMsg);
 		EV<<"Scheduled next step\n";
 	} else {
-		EV << "Empty map, finished current step\n\n";
+		// Current step is finished because the queue is empty
+		EV << "Empty queue, finished current step\n\n";
 		std::cout << "Worker " << workerId << " finished step " << currentScheduleStep << " - New step data: \n";
 		
 		// Logging code (IGNORE)
-
 		simtime_t end_op = simTime();
 		simtime_t duration = end_op - begin_op;
 
@@ -811,11 +847,12 @@ void Worker::processStep()
 			per_op_exec_times[getParentOperation(schedule[currentScheduleStep])].push_back(duration);
 		}
 		begin_op = simTime(); // Reset timer for next operation		
-
 		// End of Logging code
 
+		// Increment the schedule step
 		currentScheduleStep++;
 
+		// If this step is the last, and it is a reduce, we move to the processReduce() function
 		if(reduceLast && currentScheduleStep == schedule.size() - 1) {
 			EV << "Entering reduce\n\n";
 			//std::cout << "Worker " << workerId << " reducing: ";
@@ -823,6 +860,8 @@ void Worker::processStep()
 			//std::cout<<"Returning after process reduce\n";
 			return;
 		}
+		
+		// Else, recursively call this function
 		processStep();
 	}
 }
