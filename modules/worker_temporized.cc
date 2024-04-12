@@ -866,11 +866,20 @@ void Worker::processStep()
 	}
 }
 
+/*
+ * Processes the reduce for the current batch of data
+ *
+ * Note on failure detection: Because the reduce function is called just once per batch, and per schedule,
+ * we adjust the failure probability to be a bit higher to account for this, so, the new probability becomes:
+ * 	batchSize * schedule.size()/4 * baseProbability
+ * Account for each data point in the batch, and increment as if the reduce was distributed like the other operations
+ */
 void Worker::processReduce(){
 	if(failureDetection(batchSize*schedule.size()/4)){ //Simulate as if it was distributed like the other 3 operations
 		// Logging (ignore - adding artificial delay)
 		double delay = calculateDelay(schedule[currentScheduleStep]);
 		int reductionFactor = (rand() % (batchSize)) + 1;
+		// We just count durations, this is just a hack to avoid changing the deallocatingMemory() function
 		begin_op -= (delay/reductionFactor); // Divide delay by random number in [1, batchSize] to simulate failing in the middle of the operation
 		// End of logging
 		failed = true;
@@ -879,12 +888,13 @@ void Worker::processReduce(){
 		return;
 	}
 	
+	// Call the reduce function on the current batch of data
 	int batchRes = reduce({data[currentScheduleStep].begin(), data[currentScheduleStep].end()});
-	//std::cout << tmpReduce << " + " << batchRes << " = " << (tmpReduce + batchRes) << "\n";
-	tmpReduce = tmpReduce + batchRes;
+	tmpReduce = tmpReduce + batchRes; // Increment partial result
 
 	data[currentScheduleStep].clear();
 
+	// Schedule a delayed nextStep due to the Reduce operation
 	double delay = calculateDelay(schedule[currentScheduleStep]);
 	std::cout << "Reduce delay: " << delay << "\n";
 	currentScheduleStep++;
@@ -892,6 +902,9 @@ void Worker::processReduce(){
 	scheduleAt(simTime()+delay, nextStepMsg);
 }
 
+/*
+ * 
+ */
 void Worker::loadNextBatch(){
 	data.clear();
 
