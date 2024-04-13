@@ -159,7 +159,7 @@ protected:
 	void initializeDataModules();
 	void loadPartialResults();
 	void loadChangeKeyData();
-	bool failureDetection(int factor = 1);
+	bool failureDetection(double factor = 1);
 	void deallocatingMemory();
 
 	// ChangeKey Remote Data Insertion
@@ -1014,7 +1014,15 @@ bool Worker::applyOperation(int& value){
 }
 
 /*
-* 
+* Calculates the delay for a given operation by sampling from a lognormal distribution.
+* The parameters for the delay are retrieved from a map (`lognormal_params`) where each operation is associated
+* with a pair of values representing the mean (mu) and standard deviation (sigma) of the log-normal distribution.
+*
+* Parameter:
+*   - operation: A constant reference to a string that identifies the operation for which the delay is calculated.
+*
+* Returns:
+*   - A float value representing the calculated delay for the given operation.
 */
 float Worker::calculateDelay(const std::string& operation){
 	double delay = lognormal(lognormal_params[getParentOperation(operation)].first, lognormal_params[getParentOperation(operation)].second);
@@ -1022,6 +1030,20 @@ float Worker::calculateDelay(const std::string& operation){
 	return delay;
 }
 
+/*
+* Executes a map operation on the provided data using the specified parameter.
+* Supported operations include addition ('add'), subtraction ('sub'), multiplication ('mul'),
+* and division ('div'). If an unsupported operation is provided, the function returns 0.
+*
+* Parameters:
+*   - operation: A string that specifies the type of operation to perform on the data.
+*                Valid operations are "add", "sub", "mul", and "div".
+*   - parameter: Parameter of the operation.
+*   - data: The integer on which the operation is to be performed.
+*
+* Returns:
+*   - The result of the operation.
+*/
 int Worker::map(std::string operation, int parameter, int data){
 	if(operation == "add"){
 		return data + parameter;
@@ -1036,6 +1058,20 @@ int Worker::map(std::string operation, int parameter, int data){
 	}
 }
 
+/*
+* Executes a filter operation on the provided data using the specified parameter.
+* Supported operations include less-than ('lt'), greater-than ('gt'), less-than-or-equal ('le'),
+* and greater-than-or-equal ('ge'). If an unsupported operation is provided, the function returns 'false'.
+*
+* Parameters:
+*   - operation: A string that specifies the type of operation to perform on the data.
+*                Valid operations are "lt", "le", "gt", "ge".
+*   - parameter: Parameter of the operation.
+*   - data: The integer on which the operation is to be performed.
+*
+* Returns:
+*   - Boolean value of the operation. If 'false', the data point must be dropped.
+*/
 bool Worker::filter(std::string operation, int parameter, int data){
 	if(operation == "lt"){
 		return data < parameter;
@@ -1053,14 +1089,38 @@ bool Worker::filter(std::string operation, int parameter, int data){
 	return false;
 }
 
+/*
+* Calculates a new key as function of the data point. The range of the modulo operator
+* is given by the probability value and the number of workers.
+* If the result of the modulo operation is a valid worker ID, it is returned, otherwise, returns -1.
+*
+* Parameters:
+*   - data: The integer on which the operation is to be performed.
+*   - probability: Probability of changing key.
+*
+* Returns:
+*   - The new key if valid, otherwise -1.
+*/
 int Worker::changeKey(int data, float probability){
 	int ckValue = data % (static_cast<int>((1/(probability)) * numWorkers));
+	// If the new key is not valid, return -1.
 	if(ckValue == workerId || ckValue >= numWorkers || ckValue < 0) {
 		return -1;
 	}
 	return ckValue;
 }
 
+/*
+* Aggregates all elements in a vector of integers by summing them up.
+* This function iterates over each element in the given vector and accumulates the total sum.
+*
+* Parameters:
+*   - data: A vector of integers containing the values to be summed.
+*
+* Returns:
+*   - The sum of all integers in the provided vector as an integer. If the vector is empty,
+*     the function returns 0.
+*/
 int Worker::reduce(std::vector<int> data){
 	int result = 0;
 
@@ -1071,6 +1131,10 @@ int Worker::reduce(std::vector<int> data){
 	return result;
 }
 
+/*
+* Loads the previous persisted partial result.
+* Used for schedules ending with a 'reduce' operation.
+*/
 void Worker::loadPartialResults(){
 	std::string res_filename = "Data/Worker_" + std::to_string(workerId) + "/result.csv";
 	std::ifstream res_file(res_filename, std::ios::binary);
@@ -1091,6 +1155,10 @@ void Worker::loadPartialResults(){
 	std::cout << "Worker " << workerId << " loaded reduce: " << tmpReduce << " [CRASH RECOVERY]" << "\n";
 }
 
+/*
+* Loads the previous persisted partial result.
+* Used for schedules ending with an operation different than 'reduce'.
+*/
 void Worker::loadSavedResult() {
 	std::string res_filename = "Data/Worker_" + std::to_string(workerId) + "/result.csv";
 	std::ifstream res_file(res_filename, std::ios::binary);
@@ -1109,7 +1177,17 @@ void Worker::loadSavedResult() {
 	}
 }
 
-bool Worker::failureDetection(int factor){
+/*
+* Simulates the probability of failure by sampling from a Bernoulli distribution.
+* The base failure probability is defined in the .ini configuration file, and it can be adjusted by a multiplicative factor.
+*
+* Parameters:
+*   - factor: A multiplicative factor to adjust the probability for some event.
+*
+* Returns:
+*   - Result of sampling the distribution
+*/
+bool Worker::failureDetection(double factor){
 	int res = bernoulli(failureProbability * factor);
 	if(res){
 		return true;
@@ -1118,10 +1196,21 @@ bool Worker::failureDetection(int factor){
 
 }
 
+/*
+* Loads persisted ChangeKey information:
+*	- ChangeKeySent counter
+*	- ChangeKeyReceived counter
+*	- ChangeKeyCtr
+*	- Previous batch type (Local/Changekey)
+*
+* The ChangeKeyCtr is used as requestID when sending DataInsert messages, and is persisted at the end of a batch.
+* The ChangeKeySent/Received counters are needed for the termination of the computation. They are persisted
+* when receiving a DataInsert/ACK regardless of whether it was a duplicate.
+*/
 void Worker::loadChangeKeyData(){
 
 	std::string ck_filename = "Data/Worker_" + std::to_string(workerId) + "/CK_sent_received.csv";
-	std::ifstream ck_file(ck_filename, std::ios::binary);
+	std::ifstream ck_file(ck_filename, std::ios::binary); // Binary for Windows compatibility
 	std::string line;
 	
 	if(ck_file.is_open()){
@@ -1130,6 +1219,7 @@ void Worker::loadChangeKeyData(){
 			std::string part;
 			std::vector<int> parts;
 
+			// Template: ckSent, ckReceived
 			while (std::getline(iss, part, ',')) {
 				parts.push_back(std::stoi(part));
 				std::cout<<"Part: "<<part<<"\n";
@@ -1147,7 +1237,7 @@ void Worker::loadChangeKeyData(){
 	ck_file.close();
 
 	std::string ck_counter = "Data/Worker_" + std::to_string(workerId) + "/CK_counter.csv";
-	std::ifstream ck_counterFile(ck_counter, std::ios::binary);
+	std::ifstream ck_counterFile(ck_counter, std::ios::binary); // Binary for Windows compatibility
 	std::string counterLine;
 
 	if(ck_counterFile.is_open()){
@@ -1156,13 +1246,14 @@ void Worker::loadChangeKeyData(){
 			std::string part;
 			std::vector<int> parts;
 
+			// Template: ChangeKeyCtr, previousLocal
 			while(std::getline(iss, part, ',')){
 				parts.push_back(std::stoi(part));
 			}
 
 			if(parts.size() == 2){
 				changeKeyCtr = parts[0];
-				localBatch = parts[1] == 1 ? true : false;
+				localBatch = parts[1] == 1 ? true : false; // Needed to restart elaboration from the same batch during which the worker crashed
 				previousLocal = localBatch;
 				std::cout<<"Worker "<<workerId<<" -> LOADING: ChangeKeyCtr: "<<changeKeyCtr<<", localBatch: "<<localBatch<<"\n";
 			}else{
@@ -1173,6 +1264,10 @@ void Worker::loadChangeKeyData(){
 	ck_counterFile.close();
 }
 
+/*
+* Simulates the crash of a worker by deallocating every variable.
+* The worker's state is set to 'failed=true', which causes it to drop every message but the RestartMessages.
+*/
 void Worker::deallocatingMemory(){
 	std::cout << "Worker " << workerId << " failing..." << "\n";
 	
@@ -1195,9 +1290,6 @@ void Worker::deallocatingMemory(){
 	// End of Logging code
 
 	failed = true;
-
-	//printScheduledData(debugData);
-	std::cout << "\n";
 
 	data.clear();
 
@@ -1235,9 +1327,8 @@ void Worker::deallocatingMemory(){
 	// ChangeKey protocol
 	changeKeySent = 0;
 	changeKeyReceived = 0;
-
-	//checkChangeKeyReceived = false;
-	//finishNoticeSent = false;
+	checkChangeKeyReceived = false;
+	finishNoticeSent = false;
 
 	schedule.clear();
 	parameters.clear();
@@ -1256,6 +1347,16 @@ void Worker::deallocatingMemory(){
 	std::cout << "Crashed successfully\n";
 }
 
+/*
+* Sends the data point to the worker specified, at the schedule step specified.
+* Creates a DataInsertMessage with the necessary information, creates a clone of the message and sends it.
+* Starts a timeout self-message to re-send it in case the receiving worker has crashed.
+*
+* Parameters:
+*   - newKey: The ID of the worker receiving the DataInsert.
+*	- value: Data point value to be sent
+*	- scheduleStep: Step of the schedule at which to insert the point
+*/
 void Worker::sendData(int newKey, int value, int scheduleStep){
 	// Create message
 	DataInsertMessage* insertMsg = new DataInsertMessage();
@@ -1264,9 +1365,10 @@ void Worker::sendData(int newKey, int value, int scheduleStep){
 	insertMsg->setDestID(newKey);
 	insertMsg->setData(value);
 	
-	// Generate request ID
+	// Use ChangeKeyCtr as requestID
 	insertMsg->setReqID(changeKeyCtr);
 
+	// Set the corresponding schedule step
 	insertMsg->setScheduleStep(scheduleStep);
 	insertMsg->setAck(false);
 
@@ -1276,22 +1378,36 @@ void Worker::sendData(int newKey, int value, int scheduleStep){
 	int outputGate = getWorkerGate(newKey);
 	send(insertMsgCopy, "out", outputGate);
 
-	//add req to queue and wait for ACK, set timeout
+	// Set this InsertMsg as the unstable message
 	unstableMessage = insertMsg;
 
+	// Create a cMessage to set a timeout
 	if(insertTimeoutMsg == nullptr) {
 		cMessage* timeoutMsg = new cMessage(("Timeout-" + std::to_string(changeKeyCtr)).c_str());
 		timeoutMsg->setContextPointer(new int(changeKeyCtr));
 		insertTimeoutMsg = timeoutMsg;
 	}
 
+	// Schedule timeout event
 	scheduleAt(simTime() + insertTimeout, insertTimeoutMsg);
 
+	// Increment ChangeKeyCtr (RequestID)
 	changeKeyCtr++;
 
+	// Set status to waiting for Insert ACK
+	// The worker should wait for the ACK before going on with the elaboration.
 	waitingForInsert = true;
 }
 
+/*
+* Returns the Worker ID bounded to the specified input gate.
+*
+* Parameters:
+*	- gateIndex: Index of the input gate to resolve
+*
+* Returns:
+*	- Corresponding worker ID
+*/
 int Worker::getInboundWorkerID(int gateIndex) {
 	if(gateIndex <= workerId) {
 		return gateIndex - 1;
@@ -1299,6 +1415,15 @@ int Worker::getInboundWorkerID(int gateIndex) {
 	return gateIndex;
 }
 
+/*
+* Returns the Gate index bounded to the specified Worker ID
+*
+* Parameters:
+*	- destID: ID of the worker to resolve
+*
+* Returns:
+*	- Output gate index corresponding to the specified worker
+*/
 int Worker::getWorkerGate(int destID){
 	if(destID < workerId){
 		//out[newKey + 1] (Corresponding to worker "newKey")
@@ -1311,6 +1436,12 @@ int Worker::getWorkerGate(int destID){
 	return -1;
 }
 
+/*
+* Persists the specified int vector to the result csv file.
+*
+* Parameters:
+*	- result: Vector of ints to be persisted.
+*/
 void Worker::persistingResult(std::vector<int> result) {
     std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
     std::ofstream result_file;
@@ -1327,11 +1458,15 @@ void Worker::persistingResult(std::vector<int> result) {
 	
 }
 
+/*
+* Persists the specified reduced value to the result csv file.
+*
+* Parameters:
+*	- reducedValue: Value to be persisted.
+*/
 void Worker::persistingReduce(int reducedValue){
 	std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
 	std::string fileName = folder + "result.csv";
-
-	//std::cout << "Worker " << workerId << " persisting: " << reducedValue << "\n";
 
 	std::ofstream result_file(fileName);
 	if(result_file.is_open()){
@@ -1346,6 +1481,9 @@ void Worker::persistingReduce(int reducedValue){
 	
 }
 
+/*
+* Persists the ChangeKeyCtr and previousLocal variables.
+*/
 void Worker::persistCKCounter(){
 	std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
 	std::string fileName = folder + "CK_counter.csv";
@@ -1355,7 +1493,7 @@ void Worker::persistCKCounter(){
 	std::ofstream result_file(fileName);
 	if(result_file.is_open()){
 		EV << "Opened CK file\n";
-		std::cout<<"Worker "<<workerId<<" -> PERSISTING: changeKeyCtr: "<<changeKeyCtr<<", localBatch: "<<localBatch<<", batchType: "<<batchType<<"\n";
+		std::cout<<"Worker "<<workerId<<" -> PERSISTING: changeKeyCtr: "<<changeKeyCtr<<", localBatch: "<<previousLocal<<", batchType: "<<batchType<<"\n";
 		result_file<<changeKeyCtr<<","<<batchType;
 
 		result_file.close();
@@ -1365,6 +1503,9 @@ void Worker::persistCKCounter(){
 	}
 }
 
+/*
+* Persists counters for ChangeKeySent and ChangeKeyReceived
+*/
 void Worker::persistCKSentReceived(){
 	std::string folder = "Data/Worker_" + std::to_string(workerId) + "/";
 	std::string fileName = folder + "CK_sent_received.csv";
@@ -1382,6 +1523,10 @@ void Worker::persistCKSentReceived(){
 	}
 }
 
+/*
+* Converts the parameters for every operation into lognormal parameters.
+* For an explanation, see the 'calculateDistributionParams'
+*/
 void Worker::convertParameters() {
 	// MAP
 	lognormal_params["map"] = calculateDistributionParams(MAP_EXEC_TIME_AVG, MAP_EXEC_TIME_STD);
