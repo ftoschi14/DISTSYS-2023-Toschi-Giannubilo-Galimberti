@@ -50,7 +50,7 @@ class Leader : public cSimpleModule
 
         // Utils for plotting
         simtime_t startTime;
-        int workerFailureProbability;
+        double workerFailureProbability;
         int workerBatchSize;
     protected:
         virtual void initialize() override;
@@ -823,7 +823,7 @@ void Leader::getWorkerData()
     if(worker != nullptr)
     {
         // Accessing parameters
-        workerFailureProbability = worker->par("failureProbability").intValue();
+        workerFailureProbability = worker->par("failureProbability").doubleValue();
         workerBatchSize = worker->par("batchSize").intValue();
     }
 }
