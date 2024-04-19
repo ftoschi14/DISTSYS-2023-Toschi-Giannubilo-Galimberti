@@ -24,29 +24,36 @@ using namespace omnetpp;
 class Leader : public cSimpleModule
 {
     private:
-        bool firstTime = true;
-        bool finished;
-        bool stopPing;
-        bool reduceLast;
+        // Base simulation information
         int numWorkers;
-        int scheduleSize;
-        int dataSize;
+        
+        // Termination condition and result information
+        bool finished;
+        std::vector<int> finishedWorkers;
+        std::vector<int> ckChecked;
         std::vector<int> ckReceived;
         std::vector<int> ckSent;
         std::vector<std::vector<int>> workerResult;
-        simtime_t interval;
-        simtime_t timeout;
+
+        // Schedule information
+        int scheduleSize;
+        bool reduceLast;
         std::vector<std::string> schedule;
         std::vector<int> parameters;
-        std::vector<int> finishedWorkers;
-        std::vector<int> ckChecked;
-        std::vector<int> pingWorkers;
-        cMessage *ping_msg;
-        cMessage *check_msg;
-
+        
+        // Data information
+        int dataSize;
         std::vector<int> data;
         std::vector<std::vector<int>> data_clone;
         std::vector<std::vector<int>> dataMatrix;
+        
+        // Ping-related variables        
+        bool stopPing;
+        simtime_t interval;
+        simtime_t timeout;
+        cMessage *ping_msg;
+        cMessage *check_msg;
+        std::vector<int> pingWorkers;
 
         // Utils for plotting
         simtime_t startTime;
@@ -55,70 +62,82 @@ class Leader : public cSimpleModule
     protected:
         virtual void initialize() override;
         virtual void finish() override;
+        
+        // Message handling
         virtual void handleMessage(cMessage *msg) override;
         void handleFinishElaborationMessage(FinishLocalElaborationMessage *msg);
         void handleCheckChangeKeyAckMessage(CheckChangeKeyAckMessage *msg);
         void handlePingMessage(cMessage *msg, int id);
+        
+        // Ping handling
         void checkPing();
         void sendPing();
+        
+        // Data, schedule handling
+        void sendData(int id_dest);
+        void sendSchedule();
+        void sendCustomData(); // For custom testing
+        void sendCustomSchedule(); // For custom testing
+        
+        // Final result calculation
+        void calcResult();
+
+        // Persistent storage handling
         void createWorkersDirectory();
         void removeWorkersDirectory();
-        void sendData(int id_dest);
-        void sendCustomData();
-        void sendSchedule();
-        void sendCustomSchedule();
+        
+        // Util functions
         int numberOfFilters(int scheduleSize);
-        void calcResult();
-        void calcResultFor();
+        void getWorkerData();
+        void logSimData();
         void printingVector(std::vector<int> vector);
         void printingStringVector(std::vector<std::string> vector);
         int counter(std::vector<int> vec);
-
-        // Util functions
-        void getWorkerData();
-        void logSimData();
 };
 
 Define_Module(Leader);
 
 void Leader::initialize()
 {
-
+    // Basic initializations
     dataSize = 0;
     stopPing = false;
 
-    // Remove all previous folders in './Data/'
+    // Remove all previous simulation data in './Data/'
     removeWorkersDirectory();
 	//Create './Data/Worker_i' Directory for worker data
 	createWorkersDirectory();
 	
+    // Initialize termination condition data structures
     numWorkers = par("numWorkers").intValue();
     for(int i = 0; i < numWorkers; i++)
     {
         finishedWorkers.push_back(0);
         ckChecked.push_back(0);
-        
     }
+    
+    // Distribute data
     for(int i = 0; i < numWorkers; i++)
 	{
+	    // Re-initialize seed for more randomness
         srand((unsigned) time(NULL) + i);
-        // Call the function for sending the data
+        // Generate and send data to the worker i
 	    sendData(i);
 	}
-   
-    //sendCustomData();
 
-    // Call the function for sending the schedule
-	//sendSchedule();
-    sendCustomSchedule();
+    // Generate and send schedule to all workers
+	sendSchedule();
 
+	// Initialize structures based on numWorkers
 	finishedWorkers.resize(numWorkers);
 	pingWorkers.resize(numWorkers);
     workerResult.resize(numWorkers);
     ckSent.resize(numWorkers);
     ckReceived.resize(numWorkers);
 
+    // Initialize helper flag
     reduceLast = (schedule[schedule.size() - 1] == "reduce");
+    // If we expect one result per worker (reduce), resize the result vector
     if(reduceLast)
     {
         for(int i = 0; i < numWorkers; i++)
@@ -127,34 +146,41 @@ void Leader::initialize()
         }
     }
 
+	// Fix ping interval and schedule first ping
 	interval = 2.5;
 	ping_msg = new cMessage("sendPing");
 	scheduleAt(simTime() + interval, ping_msg);
 
+	// Fix ping timeout and schedule first check
 	timeout = 2;
 	check_msg = new cMessage("checkPing");
 	scheduleAt(simTime() + interval + timeout, check_msg);
 
+    // For logging
     startTime = simTime();
     getWorkerData();
 }
 
 void Leader::finish()
 {
-    calcResultFor();
+    // Calculate schedule result to check with workers'
+    calcResult(); // Final result in data vector
 
+    // Print final result
     std::cout << "\nResult should be: \n";
     if(reduceLast)
     {
         std::cout << data[0] << "\n";
     }
-        else
-        {
-            std::sort(std::begin(data), std::end(data));
-            printingVector(data);
-        }
+    else
+    {
+        // First sort the result and print
+        std::sort(std::begin(data), std::end(data));
+        printingVector(data);
+    }
+    
     std::cout << "\nAnd from the workers: \n";
-
+    // Print result received by workers
     if(reduceLast)
     {
         int res = 0;
@@ -162,54 +188,65 @@ void Leader::finish()
         {
             res += workerResult[i][0];
         }
+        // Sum and print reduced results
         std::cout << res << "\n" << "\n";
     }
-        else
+    else
+    {
+        /*
+        * Sort the received vectors
+        * Compare with the result calculated
+        * Print Correct/Incorrect
+        */
+        std::vector<int> workerRes;
+        for(int i = 0; i < numWorkers; i++)
         {
-            std::vector<int> workerRes;
-            for(int i = 0; i < numWorkers; i++)
+            for(int j = 0; j < workerResult[i].size(); j++)
             {
-                for(int j = 0; j < workerResult[i].size(); j++)
-                {
-                    workerRes.push_back(workerResult[i][j]);
-                }
+                // Push all results
+                workerRes.push_back(workerResult[i][j]);
             }
-
-            std::sort(std::begin(workerRes), std::end(workerRes));
-            printingVector(workerRes);
-
-            std::cout << "\n\nThe result is: ";
-            bool result;
-
-            for(int i = 0; i < workerRes.size(); i++)
-            {
-                if(data[i] != workerRes[i])
-                {
-                    result = false;
-                    break;
-                }
-            }
-
-            if(data.size() != workerRes.size())
-            {
-                result = false;
-            }
-                else
-                {
-                    result = true;
-                }
-
-            if(result)
-            {
-                std::cout << "Correct\n\n";
-            }
-                else
-                {
-                    std::cout << "Incorrect\n\n";
-                }
         }
 
+        // Sort result vector
+        std::sort(std::begin(workerRes), std::end(workerRes));
+        printingVector(workerRes);
 
+        std::cout << "\n\nThe result is: ";
+        bool result;
+
+        // Check if the elements contained are the same
+        for(int i = 0; i < workerRes.size(); i++)
+        {
+            if(data[i] != workerRes[i])
+            {
+                result = false;
+                break;
+            }
+        }
+
+        // Check if the two vectors are of the same size
+        if(data.size() != workerRes.size())
+        {
+            result = false;
+        }
+        else
+        {
+            result = true;
+        }
+
+        // Print final result
+        if(result)
+        {
+            std::cout << "Correct\n\n";
+        }
+        else
+        {
+            std::cout << "Incorrect\n\n";
+        }
+    }
+
+    // Debug prints (Ignore)
     std::cout << "For testing: " << "\n";
     std::cout << "dataMatrix: {";
 
@@ -235,6 +272,7 @@ void Leader::finish()
     printingStringVector(schedule);
     std::cout << "};" << "\n";
 
+    // Deallocating variables to avoid memory leaks
     if(ping_msg->isScheduled())
     {
         cancelEvent(ping_msg);
@@ -247,18 +285,24 @@ void Leader::finish()
     }
     delete check_msg;
 
+    // Log data
     logSimData();
 }
 
-void Leader::calcResultFor()
+/*
+* Calculates the result of the schedule based on parameters and data.
+* The final result is stored in the data vector, in the first cell if
+* the schedule has a final reduce
+*/
+void Leader::calcResult()
 {
-    std::vector<int> filteredData; // Use this for operations that might change data size.
+    std::vector<int> filteredData; // Tmp vector for filter operations
 
     for(size_t i = 0; i < schedule.size(); ++i)
     {
         const std::string& op = schedule[i];
         int param = parameters[i];
-        filteredData.clear(); // Clear it for every operation that uses it.
+        filteredData.clear(); // Clear it before the next operation
 
         if(op == "add" || op == "sub" || op == "mul" || op == "div")
         {
@@ -271,7 +315,7 @@ void Leader::calcResultFor()
                 } else if(op == "mul") {
                     value *= param;
                 } else if(op == "div") {
-                    value /= param; // Assuming param != 0
+                    value /= param;
                 }
             }
         }
@@ -290,6 +334,7 @@ void Leader::calcResultFor()
                         condition = (value <= param);
                     }
 
+                    // Push valid data points in filteredData vector
                     if(condition) {
                         filteredData.push_back(value);
                     }
@@ -304,80 +349,36 @@ void Leader::calcResultFor()
                         sum += value;
                     }
                     data.clear();
-                    data.push_back(sum);
+                    data.push_back(sum); // Push in first cell
                     break; // No further operation is expected after reduce.
                 }
-        // Ignoring 'changekey' as instructed.
+        // Ignoring changekey op.
     }
 }
 
-void Leader::calcResult()
-{
-    for(size_t i = 0; i < schedule.size(); ++i)
-    {
-        const auto& op = schedule[i];
-        
-        if(op == "add") {
-            std::transform(data.begin(), data.end(), data.begin(),
-                           [param = parameters[i]](int x) { return x + param; });
-        } else if(op == "sub") {
-            std::transform(data.begin(), data.end(), data.begin(),
-                           [param = parameters[i]](int x) { return x - param; });
-        } else if(op == "mul") {
-            std::transform(data.begin(), data.end(), data.begin(),
-                           [param = parameters[i]](int x) { return x * param; });
-        } else if(op == "div") {
-            std::transform(data.begin(), data.end(), data.begin(),
-                           [param = parameters[i]](int x) { return x / param; });
-        } else if(op == "gt") {
-            data.erase(std::remove_if(data.begin(), data.end(),
-                                      [param = parameters[i]](int x) { return x <= param; }),
-                       data.end());
-        } else if(op == "lt") {
-            data.erase(std::remove_if(data.begin(), data.end(),
-                                      [param = parameters[i]](int x) { return x >= param; }),
-                       data.end());
-        } else if(op == "ge") {
-            data.erase(std::remove_if(data.begin(), data.end(),
-                                      [param = parameters[i]](int x) { return x < param; }),
-                       data.end());
-        } else if(op == "le") {
-            data.erase(std::remove_if(data.begin(), data.end(),
-                                      [param = parameters[i]](int x) { return x > param; }),
-                       data.end());
-        } else if(op == "reduce") {
-            // Assuming 'reduce' means sum all elements and replace the vector with a single-element vector.
-            int sum = std::accumulate(data.begin(), data.end(), 0);
-            data.clear();
-            data.push_back(sum);
-            break; // Once reduced, no further operations make sense.
-        }
-        // 'changekey' operation is ignored as per instructions.
-    }
-}
-
+/*
+* - Testing function -
+* Sends a custom data vector to each worker
+* Used for debugging with specific data vectors
+*/
 void Leader::sendCustomData()
 {
-    dataMatrix = {{31, 35, 47, 93, 70, 56, 64, 15, 54, 80, 3, 67, 84, 46, 24, 96, 55, 60, 56, 3, 47, 50},
-            {12, 32, 42, 8, 96, 68, 37, 27, 6, 32, 47, 6, 62, 70, 62, 14, 12, 91, 12, 19, 28, 97, 42, 30, 21},
-            {60, 28, 37, 54, 23, 81, 10, 71, 58, 85, 91, 77, 8, 94, 32, 64, 69, 21, 37, 66, 9, 12, 56},
-            {8, 92, 33, 69, 50, 93, 82, 82, 10, 37, 35, 48, 87, 18, 70, 14, 94, 52, 94, 82},
-            {8, 92, 33, 69, 50, 93, 82, 82, 10, 37, 35, 48, 87, 18, 70, 14, 94, 52, 94, 82},
-            {8, 92, 33, 69, 50, 93, 82, 82, 10, 37, 35, 48, 87, 18, 70, 14, 94, 52, 94, 82},
-            {8, 92, 33, 69, 50, 93, 82, 82, 10, 37, 35, 48, 87, 18, 70, 14, 94, 52, 94, 82},
-            {8, 92, 33, 69, 50, 93, 82, 82, 10, 37, 35, 48, 87, 18, 70, 14, 94, 52, 94, 82},
-            {8, 92, 33, 69, 50, 93, 82, 82, 10, 37, 35, 48, 87, 18, 70, 14, 94, 52, 94, 82},
-            {8, 92, 33, 69, 50, 93, 82, 82, 10, 37, 35, 48, 87, 18, 70, 14, 94, 52, 94, 82}
-            };
-
+    dataMatrix = {{33, 74, 88, 39, 70, 75, 60, 62, 87, 48, 16, 71, 93, 92, 31, 87, 80, 92, 79, 50},
+    {82, 38, 83, 85, 97, 87, 33, 73, 39, 100, 60, 42, 39, 16, 1, 5, 5, 23, 35, 65, 45, 39, 88},
+    {62, 34, 78, 100, 55, 100, 5, 17, 59, 52, 4, 81, 17, 40, 71, 55, 62, 54, 92, 81},
+    };
+    
+    // Update data vector for final calculation
     for(int i = 0; i < dataMatrix.size(); i++)
     {
         for(int j=0; j < dataMatrix[i].size(); j++)
         {
             data.push_back(dataMatrix[i][j]);
         }
+        dataSize += dataMatrix[i].size();
     }
 
+    // Send a setup message to each worker with custom data
     for(int i = 0; i < numWorkers; i++)
     {
         SetupMessage *msg = new SetupMessage();
@@ -391,11 +392,18 @@ void Leader::sendCustomData()
     }
 }
 
+/*
+* - Testing function -
+* Sends a custom schedule to each worker
+* Used for debugging with specific schedules
+*/
 void Leader::sendCustomSchedule()
 {
-    parameters = {20, 0, 8, 0, 0, 5, 76, 1, 0, 25, 3, 0};
-    schedule = {"gt", "changekey", "mul", "changekey", "changekey", "div", "le", "sub", "changekey", "add", "div", "reduce"};
+    // Define schedule and parameters
+    schedule = {"gt", "changekey", "mul", "changekey", "changekey", "div", "le", "add", "changekey", "sub", "div", "reduce"};
+    parameters = {15, 0, 4, 0, 0, 5, 84, 25, 0, 4, 3, 0};
 
+    // Manually set values and send schedule to each worker
     scheduleSize = schedule.size();
     bool reduceFound = true;
     for(int i = 0; i < numWorkers; i++)
@@ -418,8 +426,16 @@ void Leader::sendCustomSchedule()
     }
 }
 
+/*
+* Handles incoming messages/self-messages by casting to their respective type, and
+* calling the function responsible for the corresponding task.
+*/
 void Leader::handleMessage(cMessage *msg)
 {
+    /*
+	*	FinishLocalElaboration Message segment:
+	*	Update ChangeKey counters for this worker
+	*/
     FinishLocalElaborationMessage *finishLocalMsg = dynamic_cast<FinishLocalElaborationMessage *>(msg);
     if(finishLocalMsg != nullptr)
     {
@@ -428,6 +444,12 @@ void Leader::handleMessage(cMessage *msg)
         return;
     }
 
+    /*
+	*	CheckChangeKeyACK Message segment:
+	*	Update ChangeKey counters
+	*   Update Partial result
+	*   Evaluate termination condition
+	*/
     CheckChangeKeyAckMessage *checkChangeKeyAckMsg = dynamic_cast<CheckChangeKeyAckMessage *>(msg);
     if(checkChangeKeyAckMsg != nullptr)
     {
@@ -436,7 +458,7 @@ void Leader::handleMessage(cMessage *msg)
         return;
     }
 
-    // Self message to send ping to all worker nodes
+    // Segment for workers pinging self-message
     if(msg == ping_msg)
     {
         if(stopPing) return;
@@ -445,7 +467,7 @@ void Leader::handleMessage(cMessage *msg)
         return;
     }
 
-    // Self message to check who did not send a ping to the leader node
+    // Segment for ping timeout self-message
     if(msg == check_msg)
     {
         if(stopPing) return;
@@ -454,7 +476,10 @@ void Leader::handleMessage(cMessage *msg)
         return;
     }
 
-    // Received a ping message from worker node
+    /*
+	*	Ping Message segment:
+	*	Register a worker's response to the ping
+	*/
     PingMessage *pingMsg = dynamic_cast<PingMessage *>(msg);
     if(pingMsg != nullptr)
     {
@@ -465,6 +490,9 @@ void Leader::handleMessage(cMessage *msg)
 
 }
 
+/*
+*
+*/
 void Leader::handleFinishElaborationMessage(FinishLocalElaborationMessage *msg)
 {
     int id = msg -> getWorkerId();
@@ -626,8 +654,8 @@ void Leader::sendData(int idDest)
     msg -> setAssigned_id(idDest);
     
     // Generate a random dimension for the array of values
-    int minimum = 90;
-    int maximum = 95;
+    int minimum = 50;
+    int maximum = 60;
     int numElements = minimum + rand() % (maximum - minimum + 1);
 
     dataSize += numElements;
