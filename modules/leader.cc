@@ -763,7 +763,12 @@ void Leader::sendData(int idDest)
 
 /*
 * Handles generation and sending of the schedule to all workers.
-* 
+* Selects a schedule size between minScheduleSize and maxScheduleSize
+* Randomly chooses whether the schedule should end in reduce or not
+* Defines number of filter operations based on the length of the schedule
+*
+* Generates a schedule for the generated length, with randomly generated parameters.
+* Sends the schedule and parameters to all workers
 */
 void Leader::sendSchedule()
 {
@@ -773,6 +778,7 @@ void Leader::sendSchedule()
     // Setting bounds for schedule size
     int minScheduleSize = 8;
     int maxScheduleSize = 20;
+    // Generate a scheduleSize between min and max
     scheduleSize = minScheduleSize + rand() % (maxScheduleSize - minScheduleSize + 1);
 
     schedule.resize(scheduleSize);
@@ -785,6 +791,7 @@ void Leader::sendSchedule()
     bool reduceScheduled = false;
 
     for (int i = 0; i < scheduleSize; ++i) {
+        // Randomly choose an operation in the vector
         int opIndex = rand() % numOperations;
         std::string op = operations[opIndex];
 
@@ -816,14 +823,35 @@ void Leader::sendSchedule()
     }
 }
 
+/*
+* Returns whether the specified operation is a filter operation.
+*
+* Parameters:
+*  - operation: The operation to check
+*
+* Returns:
+*  - true if the operation is a filter
+*/
 bool Leader::isFilterOperation(const std::string& operation){
      return operation == "le" || operation == "lt" || operation == "ge" || operation == "gt";
 }
 
+/*
+* Returns a randomly generated parameter based on the specified operation.
+* Depending on the operation, the function returns a value in a different range of values.
+*
+* Parameters:
+*  - operation: The operation for which to generate a parameter 
+*
+* Returns:
+*  - Parameter for the specified operation
+*/
 int Leader::generateParameter(const std::string& operation) {
         if (operation == "le" || operation == "lt") {
+            // Return high values for le/lt to avoid filtering out too many values
             return 60 + rand() % 41; // Range [60, 100]
         } else if (operation == "ge" || operation == "gt") {
+            // Same logic but for ge/gt operations
             return rand() % 41; // Range [0, 40]
         } else if (operation == "changekey" || operation == "reduce") {
             return 0;
@@ -832,6 +860,14 @@ int Leader::generateParameter(const std::string& operation) {
         }
 }
 
+/*
+* Sends the generated schedule to the specified worker.
+*
+* Parameters:
+*  - workerID: ID of the receiving worker
+*  - schedule: Generated schedule
+*  - parameters: Generated parameters
+*/
 void Leader::sendScheduleToWorker(int workerID, const std::vector<std::string>& schedule, const std::vector<int>& parameters) {
         std::cout << "Sending schedule to worker " << workerID << ": ";
         ScheduleMessage *msg = new ScheduleMessage();
@@ -849,6 +885,16 @@ void Leader::sendScheduleToWorker(int workerID, const std::vector<std::string>& 
         std::cout << "\n";
 }
 
+/*
+* Returns a value indicating the maximum number of filters that can be added to
+* the schedule given the specified scheduleSize.
+*
+* Parameters:
+*  - scheduleSize: Size of the schedule
+*
+* Returns:
+*  - Maximum number of filters for this schedule
+*/
 int Leader::numberOfFilters(int scheduleSize)
 {
     if(scheduleSize <= 10)
