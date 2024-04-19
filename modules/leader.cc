@@ -76,6 +76,9 @@ class Leader : public cSimpleModule
         // Data, schedule handling
         void sendData(int id_dest);
         void sendSchedule();
+        bool isFilterOperation(const std::string& operation);
+        int generateParameter(const std::string& operation);
+        void sendScheduleToWorker(int workerID, const std::vector<std::string>& schedule, const std::vector<int>& parameters);
         void sendCustomData(); // For custom testing
         void sendCustomSchedule(); // For custom testing
         
@@ -491,11 +494,18 @@ void Leader::handleMessage(cMessage *msg)
 }
 
 /*
-*
-*/
+ * Handles a FinishLocalElaboration message received from a worker.
+ * Updates the finishedWorkers vector, set flag 'finished' to true if all workers have sent the first FinishLocalElaboration message
+ * Updates Changekey counters
+ * Replies with ACK
+ *
+ * Parameters:
+ *   - msg: A pointer to the FinishLocalElaborationMessage.
+ */
 void Leader::handleFinishElaborationMessage(FinishLocalElaborationMessage *msg)
 {
     int id = msg -> getWorkerId();
+    // Update current finished worker, check if all workers are finished
     finishedWorkers[id] = 1;
     finished = true;
 
@@ -508,19 +518,32 @@ void Leader::handleFinishElaborationMessage(FinishLocalElaborationMessage *msg)
         }
     }
 
+    // Update worker's ck counters
     ckReceived[id] = msg -> getChangeKeyReceived();
     ckSent[id] = msg -> getChangeKeySent();
 
-    //TODO: change the message type replacing this with a new message more understandable
+    //Reply with ACK
     FinishLocalElaborationMessage* finishLocalMsg = new FinishLocalElaborationMessage();
     finishLocalMsg -> setWorkerId(id);
     send(finishLocalMsg, "out", id);
 }
 
+/*
+* Handles a CheckChangeKeyACK message received from a worker.
+* Updates the Changekey counters for this worker
+* Updates worker's partial result
+* Updates vector of received CheckChangeKeyACK messages
+* Evaluates termination condition. If the changekey counters are different (sent != received)
+* sends a FinishLocalElaboration message to make workers check their ChangeKey queue
+*
+* Parameters:
+*   - msg: A pointer to the FinishLocalElaborationMessage.
+*/
 void Leader::handleCheckChangeKeyAckMessage(CheckChangeKeyAckMessage *msg)
 {
     int id = msg -> getWorkerId();
 
+    // Update Changekey counters and partial results
     ckReceived[id] = msg -> getChangeKeyReceived();
     ckSent[id] = msg -> getChangeKeySent();
     if(reduceLast)
@@ -537,9 +560,12 @@ void Leader::handleCheckChangeKeyAckMessage(CheckChangeKeyAckMessage *msg)
                 workerResult[id][i] = msg -> getPartialVector(i);
             }
         }
+    
+    // Update worker's checked status
     ckChecked[id] = 1;
     bool allChecked = true;
 
+    // Check if all workers have sent a CheckChangeKeyACK message
     for(int i = 0; i < numWorkers; i++)
     {
         if(ckChecked[i] == 0)
@@ -551,8 +577,23 @@ void Leader::handleCheckChangeKeyAckMessage(CheckChangeKeyAckMessage *msg)
 
     EV<<"ChangeKeyReceived: "<<counter(ckReceived)<<" ChangeKeySent: "<<counter(ckSent)<<"\n";
     EV<<"Finished: "<<finished<<"\n";
-    if(counter(ckReceived) != counter(ckSent) && finished && allChecked)
+    // If all of the workers have finished at least once ('finished') and all workers have replied with a
+    // CheckChangeKeyACK message, we can check for termination
+    if(finished && allChecked)
     {
+        // If the ChangeKeys sent are equal to the ChangeKeys received, terminate simulation
+        if(counter(ckReceived) == counter(ckSent)) {
+            for(int i = 0; i < numWorkers; i++)
+            {
+                FinishSimMessage* finishSimMsg = new FinishSimMessage();
+                finishSimMsg -> setWorkerId(i);
+                send(finishSimMsg, "out", i);
+                stopPing = true;
+            }
+            return;
+        }
+        
+        // Else, ask all workers to check their ChangeKey queues
         for(int i = 0; i < numWorkers; i++)
         {
             ckChecked[i] = 0;   
@@ -561,37 +602,41 @@ void Leader::handleCheckChangeKeyAckMessage(CheckChangeKeyAckMessage *msg)
             send(finishLocalMsg, "out", i);
         }
     }
-        else
-        {
-            if(finished && allChecked)
-            {
-                for(int i = 0; i < numWorkers; i++)
-                {
-                    FinishSimMessage* finishSimMsg = new FinishSimMessage();
-                    finishSimMsg -> setWorkerId(i);
-                    send(finishSimMsg, "out", i);
-                    stopPing = true;
-                }
-            }
-        }
 }
 
+/*
+* Handles a Ping message received from a worker.
+* Updates the pingWorkers structure to register that the worker has replied
+* to the current ping.
+*
+* Parameters:
+*   - msg: A pointer to the PingMessage.
+*   - id: ID of the worker that replied
+*/
 void Leader::handlePingMessage(cMessage *msg, int id)
 {
     EV << "Ping received from worker: " << id << "\n";
     pingWorkers[id] = 1;
 }
 
+/*
+* Checks the status of the current ping.
+* Times out all workers that have failed to reply in time.
+* Reschedules a ping event, and a check ping event.
+*/
 void Leader::checkPing()
 {
     for(int i = 0; i < numWorkers; i++)
     {
+        // If worker 'i' has failed to reply to the ping
         if(pingWorkers[i] == 0)
         {
+            // Force restart the worker
             EV << "Worker "<< i << " is dead. Sending Restart message" << "\n";
             RestartMessage* restartMsg = new RestartMessage();
             restartMsg -> setWorkerID(i);
 
+            // Re-send schedule information
             restartMsg -> setScheduleArraySize(scheduleSize);
             restartMsg -> setParametersArraySize(scheduleSize);
 
@@ -602,23 +647,35 @@ void Leader::checkPing()
             }
             send(restartMsg, "out", i);
         }
+        
+        // Reset pingWorkers vector for next ping event
         pingWorkers[i] = 0;
     }
 
+    // Schedule next ping event, and check ping event
     scheduleAt(simTime() + interval, ping_msg);
     scheduleAt(simTime() + interval + timeout, check_msg);
 }
 
+/*
+* Sends a Ping message to all workers
+*/
 void Leader::sendPing()
 {
     for(int i = 0; i < numWorkers; i++)
     {
         PingMessage *pingMsg = new PingMessage();
+        // Set corresponding worker ID
         pingMsg -> setWorkerId(i);
         send(pingMsg, "out", i);
     }
 }
 
+/*
+* Handles the creation of the workers' directories.
+* Root dir: "./Data/"
+* Workers directories: "./Data/Worker_i/"
+*/
 void Leader::createWorkersDirectory()
 {
     fs::path dirPath = "Data";
@@ -636,6 +693,10 @@ void Leader::createWorkersDirectory()
     }
 }
 
+/*
+* Handles the removal of all subdirectories and files inside "./Data/"
+* Called at the beginning of a new simulation.
+*/
 void Leader::removeWorkersDirectory()
 {
     fs::path dirPath = "Data";
@@ -647,150 +708,145 @@ void Leader::removeWorkersDirectory()
     }
 }
 
+/*
+* Handles generation and sending of data to the worker specified.
+* Creates a Setup message to hold all necessary information.
+* Generates a random amount of data between minimum and maximum thresholds
+* Loads information in the Setup message
+* Sends message to specified worker
+*
+* Parameters:
+*  - idDest: ID of the receiving worker.
+*/
 void Leader::sendData(int idDest)
 {
+    // Instantiate a new SetupMessage
     SetupMessage *msg = new SetupMessage();
     std::vector<int> currentData;
-    msg -> setAssigned_id(idDest);
+    msg -> setAssigned_id(idDest); // Assign idDest to the worker
     
-    // Generate a random dimension for the array of values
+    // Generate a random dimension for the array of values between minimum and maximum
     int minimum = 50;
     int maximum = 60;
     int numElements = minimum + rand() % (maximum - minimum + 1);
 
+    // Update local information on total amount of data (Logging)
     dataSize += numElements;
 
     std::cout << "#elements: " << numElements << "\n";
     
+    // Set array size information in message
     msg -> setDataArraySize(numElements);
+    
     std::cout << "Array: ";
+    
+    // Generate numElements data points
     for(int j = 0; j < numElements; j++)
     {
-         // Generate a random int value starting from 1
+         // Generate a random int value between 1 and 100
         int value = (rand() % 100) + 1;
         std::cout << value << " ";
+        // Set this value as j-th element of the array
         msg -> setData(j, value);
 
-        // Keep track of data for final check
+        // Keep track of data for the final calculation of the result
         data.push_back(value);
         currentData.push_back(value);
     }
+    // Again, keep track of data
     dataMatrix.push_back(currentData);
     std::cout << "\n" << "\n";
+    
+    // Send the SetupMessage
     send(msg, "out", idDest);
 }
 
+/*
+* Handles generation and sending of the schedule to all workers.
+* 
+*/
 void Leader::sendSchedule()
 {
-    int numWorkers = par("numWorkers").intValue();
-    int changekeyPos, reducePos;
-    int lowerBound = 0;
-    int upperBound = 100;
-    int maxFilter = 0;
+    const std::vector<std::string> operations = {"add", "sub", "mul", "div", "gt", "lt", "ge", "le", "changekey", "reduce"};
+    int numOperations = operations.size();
 
-    // Define the possible operations set
-    std::vector<std::string> operations = {"add", "sub", "mul", "div", "gt", "lt", "ge", "le", "changekey", "reduce"};
-    int op_size = operations.size();
-    std::cout << "There are " << op_size << " operations"<< "\n";
+    // Setting bounds for schedule size
+    int minScheduleSize = 8;
+    int maxScheduleSize = 20;
+    scheduleSize = minScheduleSize + rand() % (maxScheduleSize - minScheduleSize + 1);
 
-    for(int i = 0; i < op_size; i++)
-    {
-        if(operations[i] == "changekey")
-        {
-            changekeyPos = i;
-        }
-        if(operations[i] == "reduce")
-        {
-            reducePos = i;
-        }
-    }
-
-    bool reduceFound = false;
-
-    // Generate a random number for the dimension of the schedule
-    lowerBound = 8;
-    upperBound = 20;
-    scheduleSize = lowerBound + rand() % (upperBound - lowerBound + 1);
-    std::cout << "\n" << "Schedule size: " << scheduleSize << "\n";
-    maxFilter = numberOfFilters(scheduleSize);
-
-    // Instantiate an empty array for the actual schedule and for parameters
     schedule.resize(scheduleSize);
     parameters.resize(scheduleSize);
 
-    for(int i = 0; i < scheduleSize; ++i)
-    {
-        // Generate a random index to pick a random operation in the set
-        int randomIndex = (rand() % (op_size));
+    int maxFilters = numberOfFilters(scheduleSize);
+    
+    // Decide if reduce should be the last operation
+    bool includeReduceLast = (rand() % 2 == 0); // 50-50 chance
+    bool reduceScheduled = false;
 
-        while((operations[randomIndex] == "reduce" && i != scheduleSize-1) || ((operations[randomIndex] == "le" || operations[randomIndex] == "lt"|| operations[randomIndex] == "ge" || operations[randomIndex] == "gt") && maxFilter == 0))    
-        {
-            reduceFound = true;
-            randomIndex = (rand() % (op_size));
-        }
-        if(randomIndex == changekeyPos)
-        {
-            // Generate a random number between 1 e numWorkers for the changeKey operation
-            int param = 0;
-            parameters[i] = param;
-        }
-        else
-        {
-            // Generate a random number between 1 and 10 avoiding negative numbers due to the division operation
-            if(operations[randomIndex] == "le" || operations[randomIndex] == "lt")
-            {
-                lowerBound = 60;
-                upperBound = 100;
-                int param = lowerBound + rand() % (upperBound - lowerBound + 1);
-                parameters[i] = param;
+    for (int i = 0; i < scheduleSize; ++i) {
+        int opIndex = rand() % numOperations;
+        std::string op = operations[opIndex];
+
+        // Ensure that the reduce is only scheduled as last operation
+        if (includeReduceLast && i == scheduleSize - 1) {
+            op = "reduce";
+        } else {
+            // Prevent reduce from being selected unless it's the last operation
+            // Also ensure we are not adding filters above the threshold            
+            while ((op == "reduce") || (isFilterOperation(op) && maxFilters <= 0)) {
+                opIndex = rand() % numOperations;
+                op = operations[opIndex];
             }
-                else if(operations[randomIndex] == "ge" || operations[randomIndex] == "gt")
-                {
-                    lowerBound = 0;
-                    upperBound = 40;
-                    int param = lowerBound + rand() % (upperBound - lowerBound + 1);
-                    parameters[i] = param;
-                }
-                    else
-                    {
-                        int param = (rand() % 10) + 1;
-                        parameters[i] = param;
-                    }
-            
         }
-        schedule[i] = operations[randomIndex];
-        if(operations[randomIndex] == "le" || operations[randomIndex] == "lt" || operations[randomIndex] == "ge" || operations[randomIndex] == "gt")
-        {
-            maxFilter--;
+
+        // Set the operation and parameters
+        schedule[i] = op;
+        parameters[i] = generateParameter(op);
+
+        // Update the count of filters if needed
+        if (isFilterOperation(op)) {
+            maxFilters--;
         }
     }
 
-    // Sending the schedule and the parameters
-    for(int i = 0; i < numWorkers; i++)
-    {
-        std::cout << "Schedule: ";
+    // Send the schedule to all workers
+    for (int workerID = 0; workerID < numWorkers; workerID++) {
+        sendScheduleToWorker(workerID, schedule, parameters);
+    }
+}
+
+bool Leader::isFilterOperation(const std::string& operation){
+     return operation == "le" || operation == "lt" || operation == "ge" || operation == "gt";
+}
+
+int Leader::generateParameter(const std::string& operation) {
+        if (operation == "le" || operation == "lt") {
+            return 60 + rand() % 41; // Range [60, 100]
+        } else if (operation == "ge" || operation == "gt") {
+            return rand() % 41; // Range [0, 40]
+        } else if (operation == "changekey" || operation == "reduce") {
+            return 0;
+        } else {
+            return (rand() % 10) + 1; // General case
+        }
+}
+
+void Leader::sendScheduleToWorker(int workerID, const std::vector<std::string>& schedule, const std::vector<int>& parameters) {
+        std::cout << "Sending schedule to worker " << workerID << ": ";
         ScheduleMessage *msg = new ScheduleMessage();
-        msg -> setDestWorker(i);
-        msg -> setScheduleArraySize(scheduleSize);
-        msg -> setParametersArraySize(scheduleSize);
+        msg->setDestWorker(workerID);
+        msg->setScheduleArraySize(schedule.size());
+        msg->setParametersArraySize(schedule.size());
 
-        for(int j = 0; j < scheduleSize; j++)
-        {
-            msg -> setSchedule(j, schedule[j].c_str());
-            msg -> setParameters(j, parameters[j]);
-            if(reduceFound == true)
-            {
-                schedule[scheduleSize-1] = operations[reducePos];
-                parameters[scheduleSize-1] = 0;
-                msg -> setSchedule((scheduleSize-1), operations[op_size-1].c_str());
-                msg -> setParameters((scheduleSize-1), 0);
-            }
-            std::cout << schedule[j] << " ";
-            std::cout << parameters[j] << " ";
+        for (size_t i = 0; i < schedule.size(); ++i) {
+            msg->setSchedule(i, schedule[i].c_str());
+            msg->setParameters(i, parameters[i]);
+            std::cout << schedule[i] << "(" << parameters[i] << ") ";
         }
-        send(msg, "out", i);
+
+        send(msg, "out", workerID);
         std::cout << "\n";
-    }
 }
 
 int Leader::numberOfFilters(int scheduleSize)
