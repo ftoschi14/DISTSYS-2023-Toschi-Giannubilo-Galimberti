@@ -7,8 +7,8 @@ class BatchLoader {
 private:
 	std::string fileName;
 	std::string fileProgressName;
-	int batchSize;
 	std::streampos filePosition;
+	int batchSize;
 	bool finished;
 
 	void loadProgress() {
